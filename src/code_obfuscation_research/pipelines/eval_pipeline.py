@@ -77,6 +77,7 @@ def evaluate(cfg: DictConfig) -> None:
         all_records = all_records[:limit]
 
     logger.info("Evaluating %d records from %d files", len(all_records), len(run_files))
+    print(f"Evaluating: {len(all_records)} records from {len(run_files)} files")
     cases = _records_to_eval_cases(all_records)
 
     evaluator_cfg = cfg.evaluator

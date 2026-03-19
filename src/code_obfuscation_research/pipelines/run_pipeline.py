@@ -98,6 +98,7 @@ def run(cfg: DictConfig) -> list[RunRecord]:
         perturbation_name,
         cfg.model.model_name,
     )
+    print(f"Starting: {len(samples)} samples, perturbation={perturbation_name}, model={cfg.model.model_name}")
 
     if cfg.runtime.async_mode:
         records = asyncio.run(_run_async(samples, task, perturbation, runtime, store, perturbation_name))
@@ -105,4 +106,5 @@ def run(cfg: DictConfig) -> list[RunRecord]:
         records = _run_sync(samples, task, perturbation, runtime, store, perturbation_name)
 
     logger.info("Run complete: %d records saved to %s", len(records), store.path)
+    print(f"Run complete: {len(records)} records -> {store.path}")
     return records
