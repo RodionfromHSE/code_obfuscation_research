@@ -1,0 +1,7 @@
+_target_: code_obfuscation_research.models.langchain_openai.create_openai_model
+model_name: gpt-5.4-nano-2026-03-17
+temperature: 0.0
+seed: 42
+reasoning_effort: none
+max_retries: 3
+timeout: 60

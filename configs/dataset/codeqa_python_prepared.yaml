@@ -1,0 +1,5 @@
+_target_: code_obfuscation_research.datasets.codeqa.CodeQADatasetAdapter
+hf_dataset_name: vm2825/CodeQA-dataset
+split: train
+language: python
+local_path: ${paths.artifacts_dir}/prepared/codeqa_200.jsonl

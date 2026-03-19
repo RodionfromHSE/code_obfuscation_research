@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - /paths: default
+  - /judge_model: openai_gpt5_4_mini
+  - /runtime: default
+  - /evaluator: deepeval_correctness
+  - _self_
+
+experiment_name: default_eval
+run_artifacts_path: ${paths.runs_dir}
+samples_limit: null
+debug: false

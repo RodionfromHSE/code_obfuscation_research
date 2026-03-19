@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - /paths: default
+  - /task: codeqa
+  - /dataset: codeqa_python
+  - /model: openai_gpt5_4_nano
+  - /runtime: default
+  - /perturbation: noop
+  - _self_
+
+experiment_name: default_run
+samples_limit: null
+seed: 42
+debug: false

@@ -1,0 +1,6 @@
+root_dir: ${hydra:runtime.cwd}
+artifacts_dir: ${paths.root_dir}/artifacts
+cache_dir: ${paths.artifacts_dir}/cache
+runs_dir: ${paths.artifacts_dir}/runs
+evals_dir: ${paths.artifacts_dir}/evals
+reports_dir: ${paths.root_dir}/reports

@@ -1,0 +1,5 @@
+cache_db: ${paths.cache_dir}/langchain.sqlite
+async_mode: false
+max_parse_retries: 2
+api_max_retries: 3
+max_concurrent: 5

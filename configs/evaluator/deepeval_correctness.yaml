@@ -1,0 +1,6 @@
+type: binary_correctness
+threshold: 0.5
+evaluation_steps:
+  - "Does the actual output answer the question correctly given the expected output?"
+  - "The answer must be factually consistent with the expected output"
+  - "Minor phrasing differences are acceptable if the meaning is the same"
