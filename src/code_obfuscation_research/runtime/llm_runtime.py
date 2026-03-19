@@ -33,8 +33,8 @@ class LLMRuntime:
     def __init__(
         self,
         model: BaseChatModel,
-        max_parse_retries: int = 2,
-        max_concurrent: int = 16,
+        max_parse_retries: int,
+        max_concurrent: int,
     ):
         self.model = model
         self.max_parse_retries = max_parse_retries

@@ -58,14 +58,19 @@ def _run_sync(samples, task, perturbation, runtime, store, perturbation_name) ->
 
 
 async def _run_async(samples, task, perturbation, runtime, store, perturbation_name) -> list[RunRecord]:
+    pbar = tqdm(total=len(samples), desc="Inference (async)", unit="sample")
+
     async def _process_one(sample: CodeTaskSample) -> RunRecord:
         request, stats = _build_request(sample, task, perturbation, perturbation_name)
         response = await runtime.ainvoke(request)  # semaphore is inside runtime
         record = _to_record(sample, task, request, response, perturbation_name, stats)
         store.append(record)
+        pbar.update(1)
         return record
 
-    return await asyncio.gather(*(_process_one(s) for s in samples))
+    records = await asyncio.gather(*(_process_one(s) for s in samples))
+    pbar.close()
+    return records
 
 
 def run(cfg: DictConfig) -> list[RunRecord]:

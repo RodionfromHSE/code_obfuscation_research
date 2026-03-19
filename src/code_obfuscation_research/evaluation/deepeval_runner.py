@@ -67,6 +67,7 @@ def run_correctness(metric: GEval, case: EvalCase) -> CorrectnessResult:
 
 
 async def arun_correctness(metric: GEval, case: EvalCase) -> CorrectnessResult:
+    """Caller must pass a per-coroutine metric — GEval writes score/reason to self."""
     test_case = LLMTestCase(
         input=case.input_text,
         actual_output=case.actual_output,

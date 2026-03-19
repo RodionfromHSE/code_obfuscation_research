@@ -2,9 +2,11 @@
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+from deepeval.metrics import GEval
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
@@ -85,23 +87,41 @@ def evaluate(cfg: DictConfig) -> None:
     judge_model = cfg.judge_model.model_name
     threshold = evaluator_cfg.get("threshold", 0.5)
 
-    metric = build_correctness_metric(
-        evaluation_steps=eval_steps,
-        threshold=threshold,
-        model=judge_model,
-    )
+    def metric_factory() -> GEval:
+        return build_correctness_metric(
+            evaluation_steps=eval_steps,
+            threshold=threshold,
+            model=judge_model,
+        )
+
+    max_concurrent = cfg.runtime.get("max_concurrent", 5)
 
     if cfg.runtime.async_mode:
-        results = asyncio.run(_run_async(metric, cases))
+        results = asyncio.run(_run_async(metric_factory, cases, max_concurrent))
     else:
+        metric = metric_factory()
         results = [run_correctness(metric, c) for c in tqdm(cases, desc="Evaluating", unit="case")]
 
     _save_results(Path(evals_dir), experiment_name, results)
     _print_summary(results)
 
 
-async def _run_async(metric, cases: list[EvalCase]) -> list[CorrectnessResult]:
-    return await asyncio.gather(*(arun_correctness(metric, c) for c in cases))
+async def _run_async(
+    metric_factory: Callable[[], GEval], cases: list[EvalCase], max_concurrent: int,
+) -> list[CorrectnessResult]:
+    sem = asyncio.Semaphore(max_concurrent)
+    pbar = tqdm(total=len(cases), desc="Evaluating (async)", unit="case")
+
+    async def _limited(case: EvalCase) -> CorrectnessResult:
+        async with sem:
+            metric = metric_factory()  # fresh metric per call — GEval is stateful
+            result = await arun_correctness(metric, case)
+        pbar.update(1)
+        return result
+
+    results = await asyncio.gather(*(_limited(c) for c in cases))
+    pbar.close()
+    return results
 
 
 def _print_summary(results: list[CorrectnessResult]) -> None:
