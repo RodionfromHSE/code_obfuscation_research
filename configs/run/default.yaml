@@ -2,7 +2,7 @@
 defaults:
   - /paths: default
   - /task: codeqa
-  - /dataset: codeqa_python
+  - /dataset: codeqa_python_prepared
   - /model: openai_gpt5_4_nano
   - /runtime: default
   - /perturbation: noop
