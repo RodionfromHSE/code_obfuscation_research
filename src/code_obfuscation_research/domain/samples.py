@@ -21,3 +21,12 @@ class CodeQASample(CodeTaskSample):
 
     question: str = ""
     answer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class HumanEvalSample(CodeTaskSample):
+    """Sample for HumanEval program synthesis (prompt + official tests)."""
+
+    entry_point: str = ""
+    test: str = ""
+    canonical_solution: str = ""
