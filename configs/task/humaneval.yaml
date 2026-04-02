@@ -1,0 +1,2 @@
+_target_: code_obfuscation_research.tasks.humaneval.HumanEvalTask
+name: humaneval

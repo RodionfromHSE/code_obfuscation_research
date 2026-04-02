@@ -17,9 +17,25 @@ from code_obfuscation_research.evaluation.deepeval_runner import (
     build_correctness_metric,
     run_correctness,
 )
+from code_obfuscation_research.evaluation.humaneval_exec import run_humaneval_exec
 from code_obfuscation_research.runtime.store import RunStore
 
 logger = logging.getLogger(__name__)
+
+
+def _is_humaneval_record(record: RunRecord) -> bool:
+    task_type = record.metadata.get("task_type")
+    if task_type == "humaneval":
+        return True
+    return (
+        isinstance(record.metadata.get("prompt"), str)
+        and isinstance(record.metadata.get("test"), str)
+        and isinstance(record.metadata.get("entry_point"), str)
+    )
+
+
+def _filter_for_humaneval_exec(records: list[RunRecord]) -> list[RunRecord]:
+    return [record for record in records if _is_humaneval_record(record)]
 
 
 def _records_to_eval_cases(records: list[RunRecord]) -> list[EvalCase]:
@@ -37,6 +53,7 @@ def _records_to_eval_cases(records: list[RunRecord]) -> list[EvalCase]:
                 actual_output=r.response_text,
                 expected_output=r.reference_text,
                 perturbation_name=r.perturbation_name,
+                metadata=r.metadata,
             )
         )
     return cases
@@ -74,6 +91,23 @@ def evaluate(cfg: DictConfig) -> None:
     for f in run_files:
         all_records.extend(RunStore.load_from_path(f))
 
+    evaluator_cfg = cfg.evaluator
+    evaluator_type = evaluator_cfg.type
+
+    if evaluator_type == "humaneval_exec":
+        total_records = len(all_records)
+        all_records = _filter_for_humaneval_exec(all_records)
+        logger.info(
+            "Filtered records for humaneval_exec: kept %d/%d",
+            len(all_records),
+            total_records,
+        )
+        print(f"Filtered records for humaneval_exec: {len(all_records)}/{total_records}")
+        if not all_records:
+            logger.warning("No HumanEval-compatible records found in %s", runs_dir)
+            print("No HumanEval-compatible records found for humaneval_exec.")
+            return
+
     limit = cfg.get("samples_limit")
     if limit:
         all_records = all_records[:limit]
@@ -82,28 +116,38 @@ def evaluate(cfg: DictConfig) -> None:
     print(f"Evaluating: {len(all_records)} records from {len(run_files)} files")
     cases = _records_to_eval_cases(all_records)
 
-    evaluator_cfg = cfg.evaluator
-    eval_steps = OmegaConf.to_container(evaluator_cfg.evaluation_steps, resolve=True)
-    judge_model = cfg.judge_model.model_name
-    threshold = evaluator_cfg.get("threshold", 0.5)
+    if evaluator_type == "binary_correctness":
+        eval_steps = OmegaConf.to_container(evaluator_cfg.evaluation_steps, resolve=True)
+        judge_model = cfg.judge_model.model_name
+        threshold = evaluator_cfg.get("threshold", 0.5)
 
-    def metric_factory() -> GEval:
-        return build_correctness_metric(
-            evaluation_steps=eval_steps,
-            threshold=threshold,
-            model=judge_model,
-        )
+        def metric_factory() -> GEval:
+            return build_correctness_metric(
+                evaluation_steps=eval_steps,
+                threshold=threshold,
+                model=judge_model,
+            )
 
-    max_concurrent = cfg.runtime.get("max_concurrent", 5)
+        max_concurrent = cfg.runtime.get("max_concurrent", 5)
 
-    if cfg.runtime.async_mode:
-        results = asyncio.run(_run_async(metric_factory, cases, max_concurrent))
+        if cfg.runtime.async_mode:
+            results = asyncio.run(_run_async(metric_factory, cases, max_concurrent))
+        else:
+            metric = metric_factory()
+            results = [run_correctness(metric, c) for c in tqdm(cases, desc="Evaluating", unit="case")]
+    elif evaluator_type == "humaneval_exec":
+        timeout_seconds = evaluator_cfg.get("timeout_seconds", 3.0)
+        results = [
+            run_humaneval_exec(c, timeout_seconds=timeout_seconds)
+            for c in tqdm(cases, desc="Evaluating", unit="case")
+        ]
     else:
-        metric = metric_factory()
-        results = [run_correctness(metric, c) for c in tqdm(cases, desc="Evaluating", unit="case")]
+        raise ValueError(f"Unknown evaluator type: {evaluator_type}")
 
     _save_results(Path(evals_dir), experiment_name, results)
     _print_summary(results)
+    if evaluator_type == "humaneval_exec":
+        _print_failed_ids(results)
 
 
 async def _run_async(
@@ -135,4 +179,16 @@ def _print_summary(results: list[CorrectnessResult]) -> None:
         correct = sum(1 for r in group if r.is_correct)
         errors = sum(1 for r in group if r.score is None)
         print(f"  [{pert_name}] n={n} correct={correct}/{n} ({correct/n:.0%}) errors={errors}")
+    print()
+
+
+def _print_failed_ids(results: list[CorrectnessResult]) -> None:
+    failed = [r for r in results if not r.is_correct]
+    if not failed:
+        print("All HumanEval task IDs passed.")
+        return
+
+    print("Failed HumanEval task IDs:")
+    for r in failed:
+        print(f"  - {r.sample_id}: {r.reason}")
     print()

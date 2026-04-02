@@ -36,6 +36,8 @@ def _build_request(sample: CodeTaskSample, task, perturbation, perturbation_name
 def _to_record(sample, task, request, response, perturbation_name, perturbation_stats) -> RunRecord:
     prediction = task.parse_prediction(sample, response)
     reference = task.build_reference(sample)
+    record_metadata = dict(sample.metadata)
+    record_metadata.update(dict(request.metadata))
     return RunRecord(
         sample_id=sample.sample_id,
         perturbation_name=perturbation_name,
@@ -43,6 +45,7 @@ def _to_record(sample, task, request, response, perturbation_name, perturbation_
         response_text=prediction,
         reference_text=reference,
         perturbation_stats=perturbation_stats,
+        metadata=record_metadata,
     )
 
 

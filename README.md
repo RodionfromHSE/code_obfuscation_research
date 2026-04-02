@@ -12,7 +12,7 @@ HuggingFace dataset
     -> LLMRuntime (async, cached, with parse-aware retry)
     -> RunRecord JSONL (one file per experiment+perturbation)
     -> EvalPipeline (reads JSONL, never calls the task model again)
-    -> DeepEval binary correctness (judge sees question + answer only, not code)
+    -> Evaluator (DeepEval judge OR deterministic HumanEval execution)
     -> CorrectnessResult JSONL
 ```
 
@@ -33,6 +33,44 @@ uv run python scripts/run_experiment.py perturbation=rename_symbols samples_limi
 uv run python scripts/run_evaluation.py samples_limit=3         # evaluate saved runs
 ```
 
+## HumanEval pipeline
+
+Prepare local HumanEval JSONL (one-time or when you want to refresh):
+
+```bash
+uv run python scripts/prepare_humaneval.py
+```
+
+Run baseline inference from the prepared file:
+
+```bash
+uv run python scripts/run_experiment.py \
+    --config-name run/humaneval_prepared \
+    samples_limit=3 \
+    perturbation=noop
+```
+
+Optional perturbed run (safe default for HumanEval):
+
+```bash
+uv run python scripts/run_experiment.py \
+    --config-name run/humaneval_prepared \
+    samples_limit=3 \
+    perturbation=rename_symbols \
+    perturbation.rename_functions=false
+```
+
+Evaluate with deterministic execution metric (`humaneval_exec`, pass/fail per sample):
+
+```bash
+uv run python scripts/run_evaluation.py \
+    --config-name eval/humaneval \
+    run_artifacts_path=artifacts/runs \
+    samples_limit=3
+```
+
+`eval/humaneval` now auto-filters non-HumanEval run files in `run_artifacts_path`, so mixed folders are safe.
+
 ## Overrides
 
 Both scripts use Hydra. Override any config value from the CLI:
@@ -49,7 +87,7 @@ uv run python scripts/run_experiment.py \
 
 Run outputs go to `artifacts/runs/{experiment}_{perturbation}.jsonl` -- one `RunRecord` per line with sample_id, request messages, model response, reference answer, and perturbation stats.
 
-Eval outputs go to `artifacts/evals/{experiment}_results.jsonl` -- one `CorrectnessResult` per line with sample_id, perturbation_name, is_correct (0/1), and judge reasoning.
+Eval outputs go to `artifacts/evals/{experiment}_results.jsonl` -- one `CorrectnessResult` per line with sample_id, perturbation_name, is_correct (0/1), and reason (judge rationale or execution error).
 
 Both directories are gitignored.
 
@@ -63,7 +101,7 @@ src/code_obfuscation_research/
   perturbations/  code-first transforms (noop, rename_symbols)
   models/         LangChain OpenAI adapter
   runtime/        cache, LLM runtime, JSONL store
-  evaluation/     binary correctness via DeepEval
+  evaluation/     evaluator implementations (DeepEval + HumanEval exec)
   pipelines/      run + eval orchestration
 scripts/          Hydra entry points
 configs/          Hydra config groups

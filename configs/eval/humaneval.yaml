@@ -1,0 +1,11 @@
+# @package _global_
+defaults:
+  - /paths: default
+  - /runtime: default
+  - /evaluator: humaneval_exec
+  - _self_
+
+experiment_name: humaneval_eval
+run_artifacts_path: ${paths.runs_dir}
+samples_limit: null
+debug: false

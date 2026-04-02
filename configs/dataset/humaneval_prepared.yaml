@@ -1,0 +1,5 @@
+_target_: code_obfuscation_research.datasets.human_eval.HumanEvalDatasetAdapter
+hf_dataset_name: openai/openai_humaneval
+split: test
+language: python
+local_path: ${paths.artifacts_dir}/prepared/humaneval_164.jsonl
