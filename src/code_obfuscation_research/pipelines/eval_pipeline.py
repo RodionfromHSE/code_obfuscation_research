@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from deepeval.metrics import GEval
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
@@ -84,7 +85,11 @@ def evaluate(cfg: DictConfig) -> None:
 
     evaluator_cfg = cfg.evaluator
     eval_steps = OmegaConf.to_container(evaluator_cfg.evaluation_steps, resolve=True)
-    judge_model = cfg.judge_model.model_name
+    judge_cfg = cfg.judge_model
+    if judge_cfg.get("provider") == "vllm":
+        judge_model = instantiate(judge_cfg)
+    else:
+        judge_model = judge_cfg.model_name
     threshold = evaluator_cfg.get("threshold", 0.5)
 
     def metric_factory() -> GEval:

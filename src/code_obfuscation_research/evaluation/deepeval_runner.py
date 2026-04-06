@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass
 
 from deepeval.metrics import GEval
+from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from code_obfuscation_research.domain import EvalCase
@@ -22,7 +23,7 @@ class CorrectnessResult:
 def build_correctness_metric(
     evaluation_steps: list[str],
     threshold: float = 0.5,
-    model: str = "gpt-5.4-mini-2026-03-17",
+    model: str | DeepEvalBaseLLM = "gpt-5.4-mini-2026-03-17",
 ) -> GEval:
     """Binary correctness: score is 0 or 1."""
     return GEval(

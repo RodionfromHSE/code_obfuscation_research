@@ -4,8 +4,8 @@
 
 Code privacy benchmark: perturb Python code before sending to LLM, measure utility drop.
 
-- Task model: `gpt-5.4-nano-2026-03-17`
-- Judge model: `gpt-5.4-mini-2026-03-17`
+- Task model: `gpt-5.4-nano-2026-03-17` (OpenAI) or `Qwen/Qwen3-8B` (local vLLM)
+- Judge model: `gpt-5.4-mini-2026-03-17` (OpenAI) or `Qwen/Qwen3-8B` (local vLLM)
 - Dataset: `vm2825/CodeQA-dataset` (HuggingFace)
 
 ## Build & Test
@@ -19,9 +19,21 @@ uv run ruff check src/ tests/  # lint
 ## Run
 
 ```bash
-uv run python scripts/run_experiment.py samples_limit=3                     # noop baseline
+uv run python scripts/run_experiment.py samples_limit=3                     # noop baseline (OpenAI)
 uv run python scripts/run_experiment.py perturbation=rename_symbols samples_limit=3  # perturbed
-uv run python scripts/run_evaluation.py samples_limit=3                     # evaluate
+uv run python scripts/run_evaluation.py samples_limit=3                     # evaluate (OpenAI judge)
+```
+
+### Local model (vLLM)
+
+Start the vLLM server first, then override `model=` / `judge_model=`:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3-8B --port 8000 --max-model-len 4096
+
+uv run python scripts/run_experiment.py model=vllm_qwen3 perturbation=noop samples_limit=50
+uv run python scripts/run_experiment.py model=vllm_qwen3 perturbation=rename_symbols samples_limit=50
+uv run python scripts/run_evaluation.py judge_model=vllm_qwen3 samples_limit=100
 ```
 
 ## Code Style
@@ -38,7 +50,7 @@ uv run python scripts/run_evaluation.py samples_limit=3                     # ev
 - `tasks/` -- prompt templates, response parsing, eval case building ([README](src/code_obfuscation_research/tasks/README.md))
 - `datasets/` -- HuggingFace adapters; normalize rows into domain samples immediately
 - `perturbations/` -- code-first transforms; never touch prompts or models ([README](src/code_obfuscation_research/perturbations/README.md))
-- `models/` -- thin LangChain/OpenAI adapters with full parameter support
+- `models/` -- thin LangChain adapters: OpenAI (`langchain_openai.py`) and vLLM (`langchain_vllm.py`)
 - `runtime/` -- shared async/cache/retry runtime + JSONL store ([README](src/code_obfuscation_research/runtime/README.md))
 - `evaluation/` -- DeepEval binary correctness (GEval strict_mode) ([README](src/code_obfuscation_research/evaluation/README.md))
 - `pipelines/` -- orchestration (run_pipeline + eval_pipeline)
@@ -68,3 +80,5 @@ uv run python scripts/run_evaluation.py samples_limit=3                     # ev
 **New task**: implement `TaskDefinition` protocol (build_request, parse_prediction, build_reference, build_eval_case), add yaml in `configs/task/`.
 
 **New perturbation**: implement `Perturbation` protocol (`apply(PerturbationInput) -> PerturbationResult`), add yaml in `configs/perturbation/`. Work only with `CodeArtifact`, never depend on sample type.
+
+**New local model**: add a yaml in `configs/model/` with `_target_: ...langchain_vllm.create_vllm_model` and desired `model_name`/`base_url`. For judge role, add yaml in `configs/judge_model/` with `_target_: ...vllm_judge.create_vllm_judge` and `provider: vllm`.

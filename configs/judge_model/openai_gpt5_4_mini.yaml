@@ -1,4 +1,5 @@
 _target_: code_obfuscation_research.models.langchain_openai.create_openai_model
+provider: openai
 model_name: gpt-5.4-mini-2026-03-17
 temperature: 0.0
 seed: 42

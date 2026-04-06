@@ -1,0 +1,6 @@
+_target_: code_obfuscation_research.evaluation.vllm_judge.create_vllm_judge
+provider: vllm
+model_name: Qwen/Qwen3-8B
+base_url: http://localhost:8000/v1
+temperature: 0.0
+max_tokens: 2048
