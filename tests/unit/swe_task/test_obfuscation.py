@@ -360,7 +360,7 @@ class TestDeobfuscateRoundTrip:
                 text = core.read_text()
                 text = text.replace(
                     "return x + y",
-                    f"computed_result = x + y + 1\n    return computed_result",
+                    "computed_result = x + y + 1\n    return computed_result",
                 )
                 core.write_text(text)
 

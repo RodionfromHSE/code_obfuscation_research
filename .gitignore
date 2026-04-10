@@ -2,6 +2,8 @@
 artifacts/
 reports/
 outputs/
+logs/
+openai__*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
