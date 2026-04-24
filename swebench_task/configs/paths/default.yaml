@@ -1,0 +1,2 @@
+root_dir: ${hydra:runtime.cwd}
+artifacts_dir: ${paths.root_dir}/swebench_task/artifacts

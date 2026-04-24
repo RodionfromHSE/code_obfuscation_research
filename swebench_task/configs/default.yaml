@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - /paths: default
+  - /repo_obfuscation: identity
+  - /model: gpt5_4_nano
+  - _self_
+
+dataset:
+  name: "SWE-bench/SWE-bench_Verified"
+  split: test
+  shuffle_seed: 42
+
+experiment_name: swebench_identity
+samples_limit: null
