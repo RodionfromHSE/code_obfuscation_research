@@ -75,9 +75,18 @@ def _run_agent_inner(
     max_turns: int,
     cost_limit: float,
     stats: _AgentStats,
+    api_base: str | None = None,
+    cost_tracking: str = "default",
 ) -> None:
     templates = _load_default_templates()
-    model = LitellmModel(model_name=model_name)
+    model_kwargs: dict[str, str] = {}
+    if api_base:
+        model_kwargs["api_base"] = api_base
+    model = LitellmModel(
+        model_name=model_name,
+        model_kwargs=model_kwargs,
+        cost_tracking=cost_tracking,
+    )
     env = LocalEnvironment(cwd=str(repo_dir))
     agent = DefaultAgent(
         model=model,
@@ -100,6 +109,8 @@ def run_agent(
     max_turns: int = 50,
     cost_limit: float = 3.0,
     timeout_seconds: float = 1200.0,
+    api_base: str | None = None,
+    cost_tracking: str = "default",
 ) -> AgentRunResult:
     """Run mini-swe-agent on a repo and return the generated patch."""
     logger.debug("Running agent on %s (model=%s, max_turns=%d, timeout=%.0fs)",
@@ -110,6 +121,7 @@ def run_agent(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             _run_agent_inner, repo_dir, problem_statement, model_name, max_turns, cost_limit, stats,
+            api_base=api_base, cost_tracking=cost_tracking,
         )
         try:
             future.result(timeout=timeout_seconds)

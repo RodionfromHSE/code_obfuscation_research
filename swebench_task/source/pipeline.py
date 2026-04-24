@@ -29,6 +29,8 @@ def _process_instance(
     max_turns: int,
     cost_limit: float,
     timeout_seconds: float,
+    api_base: str | None = None,
+    cost_tracking: str = "default",
 ) -> tuple[AgentRunResult, InstanceReport]:
     repo_dir = clone_repo(instance, work_dir)
 
@@ -41,6 +43,8 @@ def _process_instance(
             max_turns=max_turns,
             cost_limit=cost_limit,
             timeout_seconds=timeout_seconds,
+            api_base=api_base,
+            cost_tracking=cost_tracking,
         )
         clean_patch = obfuscation.deobfuscate_patch(
             agent_result.model_patch, ctx.result,
@@ -86,6 +90,8 @@ def run_swebench_pipeline(
     work_dir: Path = Path("swebench_task/artifacts/repos"),
     output_dir: Path = Path("swebench_task/artifacts/runs"),
     experiment_name: str = "swebench_run",
+    api_base: str | None = None,
+    cost_tracking: str = "default",
 ) -> list[InstanceReport]:
     """Run the full SWE-bench pipeline."""
     instances = load_instances(dataset_name, split, samples_limit, shuffle_seed=shuffle_seed)
@@ -111,6 +117,8 @@ def run_swebench_pipeline(
             max_turns=max_turns,
             cost_limit=cost_limit,
             timeout_seconds=timeout_seconds,
+            api_base=api_base,
+            cost_tracking=cost_tracking,
         )
         agent_results.append(agent_result)
         all_reports.append(report)

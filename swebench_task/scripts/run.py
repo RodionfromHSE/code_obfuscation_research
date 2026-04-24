@@ -44,6 +44,8 @@ def main(cfg: DictConfig) -> None:
         work_dir=Path(cfg.paths.artifacts_dir) / "repos",
         output_dir=Path(cfg.paths.artifacts_dir) / "runs",
         experiment_name=cfg.experiment_name,
+        api_base=cfg.agent.get("api_base"),
+        cost_tracking=cfg.agent.get("cost_tracking", "default"),
     )
 
 
