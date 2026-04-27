@@ -13,6 +13,7 @@ from pathlib import Path  # noqa: E402
 import hydra  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
+from swebench_task.prebuild.priority_yaml import load_priority_ids  # noqa: E402
 from swebench_task.source.pipeline import run_swebench_pipeline  # noqa: E402
 from swebench_task.utils.logging_config import configure_logging  # noqa: E402
 
@@ -30,6 +31,13 @@ def main(cfg: DictConfig) -> None:
 
     obfuscation = hydra.utils.instantiate(cfg.repo_obfuscation)
 
+    priority_path = cfg.get("priority_instances")
+    priority_ids = load_priority_ids(Path(priority_path)) if priority_path else None
+    if priority_ids:
+        logger.info("Priority filter active: %d instance IDs (from %s)",
+                    len(priority_ids), priority_path)
+
+    artifacts_dir = Path(cfg.paths.artifacts_dir)
     run_swebench_pipeline(
         obfuscation=obfuscation,
         dataset_name=cfg.dataset.name,
@@ -40,11 +48,19 @@ def main(cfg: DictConfig) -> None:
         max_turns=cfg.agent.max_turns,
         cost_limit=cfg.agent.cost_limit,
         timeout_seconds=cfg.agent.timeout_seconds,
-        work_dir=Path(cfg.paths.artifacts_dir) / "repos",
-        output_dir=Path(cfg.paths.artifacts_dir) / "runs",
+        work_dir=artifacts_dir / "repos",
+        output_dir=artifacts_dir / "runs",
         experiment_name=cfg.experiment_name,
         api_base=cfg.agent.get("api_base"),
         cost_tracking=cfg.agent.get("cost_tracking", "default"),
+        cache_dir=Path(cfg.cache.dir) if cfg.cache.get("dir") else artifacts_dir / "cache",
+        cache_enabled=cfg.cache.enabled,
+        cache_read_only=cfg.cache.read_only,
+        agent_concurrency=cfg.agent.get("concurrency", 1),
+        eval_max_workers=cfg.eval.max_workers,
+        eval_timeout=cfg.eval.timeout,
+        shallow_clone=cfg.clone.shallow,
+        priority_ids=priority_ids,
     )
 
 

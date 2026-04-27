@@ -12,3 +12,30 @@ dataset:
 
 experiment_name: swebench_identity
 samples_limit: null
+
+# optional path to a YAML produced by `python -m swebench_task.scripts.prebuild_images`.
+# when set, pipeline loads ONLY the listed instance IDs (filtered by skip list).
+# used to run pipeline against docker images that were prebuilt in advance.
+priority_instances: null
+
+cache:
+  enabled: true
+  read_only: false
+  # absolute path, or null to default to ${paths.artifacts_dir}/cache.
+  # override to isolate experiments, share with teammates, or point at a "trusted" cache.
+  dir: null
+
+agent:
+  concurrency: 1
+
+eval:
+  max_workers: 4
+  timeout: 1800
+
+clone:
+  shallow: true
+
+# keep CWD = project root so all relative paths in pipeline are stable.
+hydra:
+  job:
+    chdir: false

@@ -1,6 +1,9 @@
 """Per-instance and summary reporting for SWE-bench runs."""
 import json
 import logging
+import os
+import statistics
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -47,9 +50,23 @@ def save_instance_report(report: InstanceReport, reports_dir: Path) -> Path:
         "agent": asdict(report.agent),
         "eval": asdict(report.eval_result) if report.eval_result else None,
     }
-    path.write_text(json.dumps(data, indent=2))
+    atomic_write_text(path, json.dumps(data, indent=2))
     logger.debug("Saved instance report to %s", path)
     return path
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write via tmpfile + os.replace so a crash can't leave a partial JSON."""
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 def save_summary_report(reports: list[InstanceReport], output_path: Path) -> Path:
@@ -98,8 +115,8 @@ def save_summary_report(reports: list[InstanceReport], output_path: Path) -> Pat
         },
         "patch_stats": {
             "non_empty": len(patch_sizes),
-            "median": round(sorted(patch_sizes)[len(patch_sizes) // 2]) if patch_sizes else 0,
-            "mean": round(sum(patch_sizes) / len(patch_sizes)) if patch_sizes else 0,
+            "median": round(statistics.median(patch_sizes)) if patch_sizes else 0,
+            "mean": round(statistics.mean(patch_sizes)) if patch_sizes else 0,
             "max": max(patch_sizes) if patch_sizes else 0,
         },
         "instances": [
@@ -108,7 +125,7 @@ def save_summary_report(reports: list[InstanceReport], output_path: Path) -> Pat
         ],
     }
 
-    output_path.write_text(json.dumps(summary, indent=2))
+    atomic_write_text(output_path, json.dumps(summary, indent=2))
 
     logger.info(
         "Summary: %d evaluated, %d/%d resolved (%.1f%% of evaluated), "

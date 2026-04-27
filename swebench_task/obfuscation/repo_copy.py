@@ -17,9 +17,37 @@ logger = logging.getLogger(__name__)
 class ObfuscatedRepoContext:
     """Holds paths and stats for an obfuscated repo copy."""
 
-    original_dir: Path
     obfuscated_dir: Path
     result: RepoObfuscationResult
+
+
+def _clone_local(src: Path, dst: Path) -> None:
+    """Fast duplicate of a git working tree.
+
+    `git clone --local` hardlinks `.git/objects` on the same filesystem, so
+    large repos (django/sklearn) copy in a fraction of a second vs seconds
+    with `shutil.copytree`. The hardlinked objects dir is safe because we
+    never mutate source history; new commits made in dst write fresh
+    (non-hardlinked) objects.
+
+    Falls back to shutil.copytree when src isn't a git repo.
+    """
+    if not (src / ".git").exists():
+        shutil.copytree(src, dst, symlinks=True)
+        return
+    clone_cmd = ["git", "clone", "--local", "--quiet"]
+    if _cross_fs(src, dst.parent):
+        clone_cmd.append("--no-hardlinks")
+    clone_cmd += [str(src), str(dst)]
+    subprocess.run(clone_cmd, check=True, capture_output=True)
+
+
+def _cross_fs(a: Path, b: Path) -> bool:
+    """True if a and b are on different filesystems (hardlinks impossible)."""
+    try:
+        return a.stat().st_dev != b.stat().st_dev
+    except OSError:
+        return True
 
 
 def _git_commit_obfuscation(repo_dir: Path) -> None:
@@ -39,10 +67,10 @@ def obfuscated_repo(
     repo_dir: Path,
     obfuscation: RepoObfuscation,
 ) -> Iterator[ObfuscatedRepoContext]:
-    """Copy repo to tempdir, obfuscate in-place, commit, yield context, cleanup on exit."""
+    """Clone repo to tempdir, obfuscate in-place, commit, yield context, cleanup on exit."""
     with tempfile.TemporaryDirectory(prefix="obfus_") as tmp:
         copy_dir = Path(tmp) / repo_dir.name
-        shutil.copytree(repo_dir, copy_dir, symlinks=True)
+        _clone_local(repo_dir, copy_dir)
         logger.debug("Created temp copy at %s", copy_dir)
 
         result = obfuscation.obfuscate(copy_dir)
@@ -53,9 +81,5 @@ def obfuscated_repo(
 
         _git_commit_obfuscation(copy_dir)
 
-        yield ObfuscatedRepoContext(
-            original_dir=repo_dir,
-            obfuscated_dir=copy_dir,
-            result=result,
-        )
+        yield ObfuscatedRepoContext(obfuscated_dir=copy_dir, result=result)
     logger.debug("Cleaned up temp copy for %s", repo_dir.name)

@@ -1,4 +1,5 @@
 """Wrapper around mini-swe-agent for running a single SWE-bench instance."""
+import functools
 import importlib.resources
 import logging
 import os
@@ -17,10 +18,9 @@ from minisweagent.agents.default import DefaultAgent  # noqa: E402
 from minisweagent.environments.local import LocalEnvironment  # noqa: E402
 from minisweagent.models.litellm_model import LitellmModel  # noqa: E402
 
-from swebench_task.utils.litellm_setup import register_model_costs  # noqa: E402
+from swebench_task.utils.litellm_setup import register_model_cost  # noqa: E402
 
 litellm.suppress_debug_info = True
-register_model_costs()
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,12 @@ class AgentRunResult:
     n_steps: int = 0
 
 
+@functools.cache
 def _load_default_templates() -> dict[str, str]:
-    """Load system_template and instance_template from mini-swe-agent defaults."""
+    """Load system_template and instance_template from mini-swe-agent defaults.
+
+    Cached: templates are identical across all instances in a run.
+    """
     config_dir = importlib.resources.files("minisweagent") / "config" / "default.yaml"
     config = yaml.safe_load(config_dir.read_text())
     agent_cfg = config["agent"]
@@ -116,36 +120,46 @@ def run_agent(
     logger.debug("Running agent on %s (model=%s, max_turns=%d, timeout=%.0fs)",
                  instance_id, model_name, max_turns, timeout_seconds)
 
+    register_model_cost(model_name)
     stats = _AgentStats()
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            _run_agent_inner, repo_dir, problem_statement, model_name, max_turns, cost_limit, stats,
-            api_base=api_base, cost_tracking=cost_tracking,
+    # not using `with ThreadPoolExecutor` on purpose: its __exit__ calls
+    # shutdown(wait=True), which defeats the timeout by blocking until the
+    # worker finishes. on timeout we shutdown(wait=False) and let the
+    # orphan thread finish on its own — python can't kill threads, but
+    # cost_limit + step_limit inside DefaultAgent.query() are the real
+    # budget guards; timeout_seconds is a belt-and-suspenders wall-clock.
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"agent-{instance_id}")
+    future = executor.submit(
+        _run_agent_inner, repo_dir, problem_statement, model_name, max_turns, cost_limit, stats,
+        api_base=api_base, cost_tracking=cost_tracking,
+    )
+    try:
+        future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError:
+        executor.shutdown(wait=False, cancel_futures=True)
+        logger.warning("Agent timed out after %.0fs on %s", timeout_seconds, instance_id)
+        return AgentRunResult(
+            instance_id=instance_id,
+            model_patch="",
+            timed_out=True,
+            error=f"timeout after {timeout_seconds}s",
+            cost_usd=stats.cost,
+            n_llm_calls=stats.n_calls,
+            n_steps=stats.n_steps,
         )
-        try:
-            future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError:
-            logger.warning("Agent timed out after %.0fs on %s", timeout_seconds, instance_id)
-            return AgentRunResult(
-                instance_id=instance_id,
-                model_patch="",
-                timed_out=True,
-                error=f"timeout after {timeout_seconds}s",
-                cost_usd=stats.cost,
-                n_llm_calls=stats.n_calls,
-                n_steps=stats.n_steps,
-            )
-        except Exception as e:
-            logger.error("Agent error on %s: %s", instance_id, e)
-            return AgentRunResult(
-                instance_id=instance_id,
-                model_patch="",
-                error=str(e),
-                cost_usd=stats.cost,
-                n_llm_calls=stats.n_calls,
-                n_steps=stats.n_steps,
-            )
+    except Exception as e:
+        executor.shutdown(wait=False, cancel_futures=True)
+        logger.error("Agent error on %s: %s", instance_id, e)
+        return AgentRunResult(
+            instance_id=instance_id,
+            model_patch="",
+            error=str(e),
+            cost_usd=stats.cost,
+            n_llm_calls=stats.n_calls,
+            n_steps=stats.n_steps,
+        )
+    executor.shutdown(wait=True)
 
     patch = _git_diff(repo_dir)
     logger.debug("Agent finished %s: patch=%d chars, cost=$%.4f, calls=%d, steps=%d",

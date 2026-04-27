@@ -117,17 +117,48 @@ class TestRopeRepoRenamer:
             result = renamer.obfuscate(repo)
             assert "test_compute" not in result.rename_map
 
-    def test_updates_test_file_references(self):
-        """Test files should NOT be renamed (definitions), but their references to renamed symbols should update."""
+    def test_test_dir_left_untouched(self):
+        """Test dirs are in rope's ignored_resources: neither definitions nor references touched."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _create_fixture_repo(Path(tmp))
+            original_test = (repo / "tests" / "test_core.py").read_text()
+            renamer = RopeRepoRenamer(max_symbols=50)
+            renamer.obfuscate(repo)
+            assert (repo / "tests" / "test_core.py").read_text() == original_test
+
+    def test_ignores_file_with_syntax_error_outside_tests(self):
+        """A syntax-error file outside ignored dirs is auto-added to rope's ignored_resources."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _create_fixture_repo(Path(tmp))
+            (repo / "mypackage" / "broken.py").write_text("def :::\n")
+            renamer = RopeRepoRenamer(max_symbols=50)
+            result = renamer.obfuscate(repo)
+            assert "compute" in result.rename_map
+
+    def test_same_name_in_different_files_both_renamed(self):
+        """Two module-level functions named `process` in different files should each
+        get a distinct new name (reverse map stays 1:1)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            pkg = repo / "pkg"
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("")
+            (pkg / "a.py").write_text("def process():\n    return 1\n")
+            (pkg / "b.py").write_text("def process():\n    return 2\n")
             renamer = RopeRepoRenamer(max_symbols=50)
             result = renamer.obfuscate(repo)
 
-            test_text = (repo / "tests" / "test_core.py").read_text()
-            new_compute = result.rename_map["compute"]
-            assert f"import {new_compute}" in test_text
-            assert "import compute" not in test_text
+            assert result.symbols_renamed == 2
+            assert len(result.reverse_rename_map) == 2
+            new_names = set(result.reverse_rename_map.keys())
+            assert all(v == "process" for v in result.reverse_rename_map.values())
+
+            a_text = (pkg / "a.py").read_text()
+            b_text = (pkg / "b.py").read_text()
+            assert "process" not in a_text
+            assert "process" not in b_text
+            assert sum(1 for n in new_names if n in a_text) == 1
+            assert sum(1 for n in new_names if n in b_text) == 1
 
 
 class TestObfuscatedRepoContextManager:
@@ -156,6 +187,38 @@ class TestObfuscatedRepoContextManager:
                 copy_text = (ctx.obfuscated_dir / "mypackage" / "core.py").read_text()
                 assert copy_text == original_text
                 assert ctx.result.symbols_renamed == 0
+
+    def test_git_clone_fast_path_preserves_history(self):
+        """When src is a git repo, the copy must be a git repo at the same commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _create_fixture_repo(Path(tmp))
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"],
+                cwd=repo, check=True,
+            )
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                 "commit", "-q", "-m", "init"],
+                cwd=repo, check=True,
+            )
+            src_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True,
+            ).stdout.decode().strip()
+
+            with obfuscated_repo(repo, RepoIdentity()) as ctx:
+                assert (ctx.obfuscated_dir / ".git").exists()
+                copy_head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=ctx.obfuscated_dir, check=True, capture_output=True,
+                ).stdout.decode().strip()
+                # identity obfus still commits (allow-empty), so copy is HEAD+1
+                parent = subprocess.run(
+                    ["git", "rev-parse", "HEAD^"],
+                    cwd=ctx.obfuscated_dir, check=True, capture_output=True,
+                ).stdout.decode().strip()
+                assert parent == src_head
+                assert copy_head != src_head
 
 
 class TestDeobfuscatePatchIdentity:

@@ -4,6 +4,8 @@ import fnmatch
 import logging
 import re
 import signal
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 from rope.base.project import Project
@@ -16,47 +18,98 @@ logger = logging.getLogger(__name__)
 _FUNC_PREFIX = "func_"
 _CLS_PREFIX = "cls_"
 
+_DEFAULT_IGNORED_DIRS = [
+    "tests", "test", "testing",
+    "docs", "doc", "examples", "example",
+    "benchmarks", "benchmark",
+    "build", "dist",
+    ".tox", ".venv", "venv",
+    "__pycache__",
+]
 
-def _reverse_rename_text(text: str, rename_map: dict[str, str]) -> str:
+
+def _reverse_rename_text(text: str, reverse_map: dict[str, str]) -> str:
     """Replace obfuscated names with originals via single-pass regex."""
-    reverse = {v: k for k, v in rename_map.items()}
-    if not reverse:
+    if not reverse_map:
         return text
     # longest keys first so cls_10 is matched before cls_1
-    keys = sorted(reverse, key=len, reverse=True)
+    keys = sorted(reverse_map, key=len, reverse=True)
     pattern = re.compile(r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b")
-    return pattern.sub(lambda m: reverse[m.group(0)], text)
+    return pattern.sub(lambda m: reverse_map[m.group(0)], text)
 
 
 class _TimeoutError(Exception):
     pass
 
 
-def _timeout_handler(signum: int, frame: object) -> None:
+def _signal_handler(signum: int, frame: object) -> None:
     raise _TimeoutError("rope rename timed out")
 
 
-def _collect_public_symbols(
+def _run_with_timeout(fn, timeout_seconds: int):
+    """Run fn() with a timeout. Uses signal.alarm on main thread, no-op otherwise.
+
+    rope's rename is CPU-bound so can't be interrupted via threading.Timer/asyncio;
+    only signal can actually break in. In worker threads (e.g. async pool), we skip
+    the timeout — per-instance agent timeout is the outer safety net.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return fn()
+    old_handler = signal.signal(signal.SIGALRM, _signal_handler)
+    signal.alarm(timeout_seconds)
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+@dataclass(frozen=True, slots=True)
+class _Symbol:
+    """Top-level def/class discovered by the AST scanner."""
+
+    file_path: Path
+    name: str
+    kind: str  # "func" or "class"
+    lineno: int  # 1-based
+    col_offset: int  # 0-based byte column within the line
+
+
+def _line_starts(source: str) -> list[int]:
+    """Byte offset of the start of each line; last entry is end-of-file."""
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    return starts
+
+
+def _name_offset(source: str, lineno: int, col_offset: int, kind: str) -> int:
+    """Byte offset of the identifier following `def ` / `class `."""
+    keyword_len = len("def " if kind == "func" else "class ")
+    return _line_starts(source)[lineno - 1] + col_offset + keyword_len
+
+
+def _scan_file(
     file_path: Path,
     rename_functions: bool,
     rename_classes: bool,
-) -> list[tuple[str, str, int]]:
-    """Parse a file and return (name, kind, offset) for each public top-level def/class."""
+) -> tuple[list[_Symbol], bool]:
+    """Parse one .py file, return (symbols, is_syntax_error)."""
     try:
         source = file_path.read_text()
         tree = ast.parse(source)
     except (SyntaxError, UnicodeDecodeError):
-        return []
+        return [], True
 
-    symbols: list[tuple[str, str, int]] = []
+    symbols: list[_Symbol] = []
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.FunctionDef) and rename_functions:
             if not node.name.startswith("_"):
-                symbols.append((node.name, "func", node.col_offset))
+                symbols.append(_Symbol(file_path, node.name, "func", node.lineno, node.col_offset))
         elif isinstance(node, ast.ClassDef) and rename_classes:
             if not node.name.startswith("_"):
-                symbols.append((node.name, "class", node.col_offset))
-    return symbols
+                symbols.append(_Symbol(file_path, node.name, "class", node.lineno, node.col_offset))
+    return symbols, False
 
 
 def _should_skip(file_path: Path, skip_patterns: list[str]) -> bool:
@@ -64,15 +117,15 @@ def _should_skip(file_path: Path, skip_patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in skip_patterns)
 
 
-def _find_offset(source: str, name: str, hint_col: int) -> int | None:
-    """Find the byte offset of a top-level symbol definition in source."""
-    for i, line in enumerate(source.splitlines(keepends=True)):
-        stripped = line.lstrip()
-        if stripped.startswith(f"def {name}") or stripped.startswith(f"class {name}"):
-            idx = line.index(name)
-            offset = sum(len(ln) for ln in source.splitlines(keepends=True)[:i]) + idx
-            return offset
-    return None
+def _is_under_ignored_dir(
+    file_path: Path, repo_dir: Path, ignored_dirs: list[str],
+) -> bool:
+    """True if any ancestor directory name matches one of `ignored_dirs`."""
+    try:
+        rel_parts = file_path.relative_to(repo_dir).parts[:-1]
+    except ValueError:
+        return False
+    return any(part in ignored_dirs for part in rel_parts)
 
 
 class RopeRepoRenamer:
@@ -87,6 +140,7 @@ class RopeRepoRenamer:
         rename_functions: bool = True,
         rename_classes: bool = True,
         skip_patterns: list[str] | None = None,
+        ignored_dirs: list[str] | None = None,
         max_symbols: int = 200,
         per_symbol_timeout: int = 30,
     ):
@@ -94,45 +148,77 @@ class RopeRepoRenamer:
         self.rename_functions = rename_functions
         self.rename_classes = rename_classes
         self.skip_patterns = skip_patterns or ["test_*", "conftest*", "setup.py"]
+        self.ignored_dirs = ignored_dirs if ignored_dirs is not None else list(_DEFAULT_IGNORED_DIRS)
         self.max_symbols = max_symbols
         self.per_symbol_timeout = per_symbol_timeout
 
     def obfuscate(self, repo_dir: Path) -> RepoObfuscationResult:
         repo_dir = repo_dir.resolve()
-        project = Project(str(repo_dir))
+        symbols, bad_files = self._scan_repo(repo_dir)
+        ignored_resources = list(self.ignored_dirs) + bad_files
+        if bad_files:
+            logger.info(
+                "Found %d syntax-error files outside ignored dirs; added to rope ignored_resources",
+                len(bad_files),
+            )
+        project = Project(str(repo_dir), ignored_resources=ignored_resources)
         try:
-            return self._obfuscate_project(project, repo_dir)
+            return self._rename_all(project, symbols)
         finally:
             project.close()
 
     def deobfuscate_patch(self, patch: str, result: RepoObfuscationResult) -> str:
         """Reverse-map obfuscated names in a patch back to originals."""
-        if not patch or not result.rename_map:
+        if not patch:
             return patch
-        return _reverse_rename_text(patch, result.rename_map)
+        reverse = result.reverse_rename_map
+        if not reverse and result.rename_map:
+            # backward compat: derive reverse from forward (1:1 assumption)
+            reverse = {v: k for k, v in result.rename_map.items()}
+        if not reverse:
+            return patch
+        return _reverse_rename_text(patch, reverse)
 
-    def _obfuscate_project(self, project: Project, repo_dir: Path) -> RepoObfuscationResult:
-        all_symbols = self._collect_all_symbols(repo_dir)
-        if len(all_symbols) > self.max_symbols:
+    def _scan_repo(self, repo_dir: Path) -> tuple[list[_Symbol], list[str]]:
+        """Single pass over the repo: collect symbols and list syntax-error files."""
+        symbols: list[_Symbol] = []
+        bad_files: list[str] = []
+        for py_file in sorted(repo_dir.rglob("*.py")):
+            if not py_file.is_file():
+                continue
+            if _is_under_ignored_dir(py_file, repo_dir, self.ignored_dirs):
+                continue
+            file_symbols, is_bad = _scan_file(
+                py_file, self.rename_functions, self.rename_classes,
+            )
+            if is_bad:
+                bad_files.append(str(py_file.relative_to(repo_dir)))
+                continue
+            if _should_skip(py_file, self.skip_patterns):
+                continue
+            symbols.extend(file_symbols)
+        return symbols, bad_files
+
+    def _rename_all(
+        self, project: Project, symbols: list[_Symbol],
+    ) -> RepoObfuscationResult:
+        if len(symbols) > self.max_symbols:
             logger.warning(
                 "Found %d symbols, capping at max_symbols=%d",
-                len(all_symbols), self.max_symbols,
+                len(symbols), self.max_symbols,
             )
-            all_symbols = all_symbols[: self.max_symbols]
+            symbols = symbols[: self.max_symbols]
 
         func_counter = 0
         cls_counter = 0
         rename_map: dict[str, str] = {}
+        reverse_rename_map: dict[str, str] = {}
         errors: list[str] = []
         skipped: list[str] = []
         modified_files: set[str] = set()
 
-        for file_path, sym_name, kind, col_offset in all_symbols:
-            if sym_name in rename_map:
-                skipped.append(f"{sym_name}: already renamed")
-                continue
-
-            if kind == "func":
+        for sym in symbols:
+            if sym.kind == "func":
                 new_name = f"{_FUNC_PREFIX}{func_counter}"
                 func_counter += 1
             else:
@@ -140,78 +226,45 @@ class RopeRepoRenamer:
                 cls_counter += 1
 
             try:
-                changed_files = self._do_rename(
-                    project, file_path, sym_name, new_name, col_offset,
-                )
-                rename_map[sym_name] = new_name
+                changed_files = self._do_rename(project, sym, new_name)
+                rename_map[sym.name] = new_name
+                reverse_rename_map[new_name] = sym.name
                 modified_files.update(changed_files)
-                logger.debug("Renamed %s -> %s (%d files touched)", sym_name, new_name, len(changed_files))
+                logger.debug(
+                    "Renamed %s -> %s (%d files touched)",
+                    sym.name, new_name, len(changed_files),
+                )
             except _TimeoutError:
-                skipped.append(f"{sym_name}: timeout ({self.per_symbol_timeout}s)")
-                logger.warning("Timeout renaming %s in %s", sym_name, file_path)
+                skipped.append(f"{sym.name}: timeout ({self.per_symbol_timeout}s)")
+                logger.warning("Timeout renaming %s in %s", sym.name, sym.file_path)
             except Exception as e:
-                errors.append(f"{sym_name} in {file_path.name}: {e}")
-                logger.warning("Failed to rename %s in %s: %s", sym_name, file_path, e)
+                errors.append(f"{sym.name} in {sym.file_path.name}: {e}")
+                logger.warning("Failed to rename %s in %s: %s", sym.name, sym.file_path, e)
 
         return RepoObfuscationResult(
-            symbols_renamed=len(rename_map),
+            symbols_renamed=len(reverse_rename_map),
             files_modified=len(modified_files),
             rename_map=rename_map,
+            reverse_rename_map=reverse_rename_map,
             errors=errors,
             skipped=skipped,
         )
 
-    def _collect_all_symbols(
-        self, repo_dir: Path,
-    ) -> list[tuple[Path, str, str, int]]:
-        """Collect (file_path, name, kind, col_offset) across the repo."""
-        results: list[tuple[Path, str, str, int]] = []
-        seen_names: set[str] = set()
-
-        for py_file in sorted(repo_dir.rglob("*.py")):
-            if _should_skip(py_file, self.skip_patterns):
-                continue
-            if not py_file.is_file():
-                continue
-            symbols = _collect_public_symbols(
-                py_file, self.rename_functions, self.rename_classes,
-            )
-            for name, kind, col in symbols:
-                if name not in seen_names:
-                    results.append((py_file, name, kind, col))
-                    seen_names.add(name)
-        return results
-
     def _do_rename(
-        self,
-        project: Project,
-        file_path: Path,
-        sym_name: str,
-        new_name: str,
-        hint_col: int,
+        self, project: Project, sym: _Symbol, new_name: str,
     ) -> list[str]:
         """Rename one symbol across the project. Returns list of changed file paths."""
         project_root = Path(project.root.real_path).resolve()
-        rel_path = str(file_path.resolve().relative_to(project_root))
+        rel_path = str(sym.file_path.relative_to(project_root))
         resource = project.get_resource(rel_path)
 
-        source = resource.read()
-        offset = _find_offset(source, sym_name, hint_col)
-        if offset is None:
-            raise ValueError(f"Could not find '{sym_name}' definition in {rel_path}")
-
+        offset = _name_offset(resource.read(), sym.lineno, sym.col_offset, sym.kind)
         renamer = Rename(project, resource, offset)
 
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(self.per_symbol_timeout)
-        try:
+        def _apply():
             changes = renamer.get_changes(new_name)
             project.do(changes)
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+            return changes
 
-        changed = []
-        for change in changes.changes:
-            changed.append(change.resource.path)
-        return changed
+        changes = _run_with_timeout(_apply, self.per_symbol_timeout)
+        return [c.resource.path for c in changes.changes]

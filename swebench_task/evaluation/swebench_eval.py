@@ -1,11 +1,11 @@
 """Wrapper around swebench evaluation harness."""
 import json
 import logging
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from swebench_task.agent.runner import AgentRunResult
+from swebench_task.evaluation.eval_progress import EvalProgressMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,29 @@ def run_swebench_eval(
     max_workers: int = 4,
     run_id: str = "eval",
     timeout: int = 1800,
+    total_to_eval: int | None = None,
+    report_dir: Path | None = None,
 ) -> list[SWEBenchEvalResult]:
-    """Run swebench eval harness and parse results."""
+    """Run swebench eval harness and parse results.
+
+    `report_dir` is where the harness writes the global summary (`*.<run_id>.json`)
+    and `logs/`. Defaults to `predictions_path.parent` so outputs live next to
+    predictions regardless of CWD.
+    """
     from swebench.harness.run_evaluation import main as run_evaluation
 
-    logger.info("Running SWE-bench evaluation on %s", predictions_path)
-    logs_dir = Path("logs") / "run_evaluation" / run_id
-    monitor = _EvalProgressMonitor(logs_dir)
+    if report_dir is None:
+        report_dir = predictions_path.parent.resolve()
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "Running SWE-bench evaluation on %s (max_workers=%d, report_dir=%s)",
+        predictions_path, max_workers, report_dir,
+    )
+    logs_dir = report_dir / "logs" / "run_evaluation" / run_id
+    if total_to_eval is None:
+        total_to_eval = _count_predictions(predictions_path)
+    monitor = EvalProgressMonitor(logs_dir, total=total_to_eval)
     monitor.start()
     try:
         run_evaluation(
@@ -67,6 +83,7 @@ def run_swebench_eval(
             namespace=None,
             rewrite_reports=False,
             modal=False,
+            report_dir=str(report_dir),
         )
     except Exception as e:
         logger.error("SWE-bench evaluation failed: %s", e)
@@ -75,38 +92,28 @@ def run_swebench_eval(
         monitor.stop()
     per_instance = _parse_instance_reports(logs_dir)
 
-    global_report = _find_global_report(predictions_path.parent, run_id)
+    global_report = _find_global_report(report_dir, run_id)
     if global_report:
         per_instance = _merge_global_errors(per_instance, global_report)
 
     return per_instance
 
 
-class _EvalProgressMonitor:
-    """Polls swebench log directory for report.json files and logs progress."""
-
-    def __init__(self, logs_dir: Path, interval: float = 15.0):
-        self._logs_dir = logs_dir
-        self._interval = interval
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._last_count = 0
-
-    def start(self) -> None:
-        self._thread = threading.Thread(target=self._poll, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _poll(self) -> None:
-        while not self._stop.wait(self._interval):
-            count = sum(1 for _ in self._logs_dir.rglob("report.json"))
-            if count != self._last_count:
-                self._last_count = count
-                logger.info("Docker eval: %d instances completed", count)
+def _count_predictions(predictions_path: Path) -> int:
+    """Count non-empty predictions in a JSONL file (those that will be sent to Docker)."""
+    if not predictions_path.exists():
+        return 0
+    n = 0
+    for line in predictions_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("model_patch"):
+            n += 1
+    return n
 
 
 def _parse_instance_reports(results_dir: Path) -> list[SWEBenchEvalResult]:
@@ -129,14 +136,9 @@ def _parse_instance_reports(results_dir: Path) -> list[SWEBenchEvalResult]:
     return results
 
 
-def _find_global_report(output_dir: Path, run_id: str) -> dict | None:
-    """Find and parse the global swebench summary report."""
-    for f in Path(".").glob(f"*.{run_id}.json"):
-        try:
-            return json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-    for f in output_dir.glob(f"*.{run_id}.json"):
+def _find_global_report(report_dir: Path, run_id: str) -> dict | None:
+    """Find and parse the global swebench summary report `*.<run_id>.json`."""
+    for f in report_dir.glob(f"*.{run_id}.json"):
         try:
             return json.loads(f.read_text())
         except (json.JSONDecodeError, OSError):

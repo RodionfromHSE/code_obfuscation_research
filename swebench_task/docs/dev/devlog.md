@@ -278,3 +278,229 @@ Fix: removed the `f` prefix.
 Obfuscation clearly degrades agent performance: resolved rate drops from 37% to 45% of
 evaluated instances (identity) down to ~23% (rename). The agent produces many more empty
 patches when confused by generic names.
+
+---
+
+## Phase 7: Prebuilding Docker instance images
+
+### Motivation
+
+After multiple 100-310 instance runs, timing breakdown made docker eval the single
+biggest bottleneck. Per-instance wall clock:
+
+| phase | time | % |
+|---|---|---|
+| clone + obfuscate | 2-15s | <5% |
+| agent (LLM) | 30-180s | 20-40% |
+| docker eval | 120-300s | 55-70% |
+
+Almost all of the docker time is rebuilding `sweb.eval.*` instance images: git clone
+the repo, checkout base_commit, pip install -e, run any `install` commands from the
+spec. Then a small amount runs the actual tests. The instance image is a stable
+artifact — same base_commit → bit-identical image. But the harness throws it away.
+
+### Root cause
+
+`swebench_eval.py` passes `cache_level="env"` to the harness. Digging into
+`swebench/harness/docker_utils.py:should_remove`:
+
+```python
+elif image_name.startswith("sweb.eval"):
+    if cache_level in {"none", "base", "env"} and (clean or not existed_before):
+        return True
+```
+
+With `cache_level="env"` + `clean=False`, every `sweb.eval.*` image whose
+`existed_before` is `False` is deleted at end of run. Fresh builds get `existed_before=False`
+because they were built in-run. So instance images don't survive across pipeline runs.
+
+### Critical realization: the semantics are already correct
+
+We initially considered switching `cache_level` to `"instance"`. Then noticed: with the
+existing `"env"` policy, **prebuilt images satisfy `existed_before=True`** (they were
+on disk before the run started). `should_remove → False` for them. Only ad-hoc images
+built during the run are cleaned up.
+
+So the desired "use prebuilt if available, otherwise build-and-discard" behavior is
+**automatic**. No config change. Just populate the cache before running.
+
+### Design: out-of-band top-K prebuilder
+
+Requirements from the user:
+- only prebuild a small, high-impact subset (disk budget ~50 GB)
+- never invoke prebuild from inside the pipeline — separate CLI
+- prebuild target = "most popular" images in the filtered set → rank `(repo, version)`
+  buckets by instance count, take top-K under disk cap
+- include the corresponding instance IDs in a priority list so pipeline runs can be
+  restricted to them
+- well-tested; minimal diff to existing code
+- store manifest + cleanup script in `~/Downloads/ml4se_images/` as a self-explaining
+  bookmark
+
+### Module layout (new): `swebench_task/prebuild/`
+
+- `image_selection.py` — pure logic: `Bucket`, `PrebuildPlan`, `group_by_repo_version`,
+  `select_top_k_buckets`, `estimate_bucket_gb`. No docker, no HF. Unit-testable.
+- `manifest.py` — `PrebuildManifest` dataclass + JSON round-trip + `generate_cleanup_script`
+  (embeds tags inline so cleanup works even if manifest is later edited).
+- `prebuilder.py` — wraps `swebench.harness.prepare_images.main()`; diffs
+  `docker images` before/after to populate the manifest with actual byte sizes.
+- `priority_yaml.py` — `write_priority_yaml` / `load_priority_ids` for the
+  `configs/priority_instances.yaml` file.
+
+### CLI scripts (new)
+
+- `scripts/prebuild_images.py` — flags: `--top-k`, `--max-total-gb`, `--workers`,
+  `--ml4se-dir`, `--repo`, `--force-rebuild`, `--dry-run`, `--yes`. Loads filtered
+  dataset (honors `docker_skip.yaml`), builds plan, confirms, calls `run_prebuild`,
+  writes manifest + cleanup + priority YAML.
+- `scripts/cleanup_prebuilt_images.py` — reads manifest, `docker rmi -f` every listed
+  tag, writes before/after `docker system df` snapshots.
+
+### Pipeline hook (minimal change)
+
+One new optional parameter `priority_ids: list[str] | None` threaded through:
+- `source/dataset.py:load_instances` — if given, filters dataset to those IDs (skip
+  list still applies, ordering preserved as given)
+- `source/pipeline.py:run_swebench_pipeline` — just passes it to `load_instances`
+- `__main__.py` — reads `priority_instances: <yaml_path>` from Hydra config, loads via
+  `load_priority_ids`
+
+That's the entire pipeline diff. No changes to obfuscation, agent, cache, or eval
+internals.
+
+### Bucket selection
+
+Greedy under a disk budget:
+
+```python
+def select_top_k_buckets(buckets, top_k, max_total_gb):
+    buckets_sorted_desc_by_size = ...
+    for bucket in buckets_sorted_desc_by_size:
+        if len(taken) >= top_k:
+            break
+        if estimate_bucket_gb(bucket) + total_gb > max_total_gb:
+            skip
+        else:
+            take
+    # edge case: if the first bucket alone exceeds budget, take it and flag it
+```
+
+Size estimate: `n_instances * 1.2 GB` (instance images) + `REPO_ENV_SIZE_GB.get(repo, 5)`
+(env image amortized once per bucket).
+
+### Storage caveat
+
+Docker Desktop on Mac stores all images in its VM disk (single path). You can't
+redirect specific images to `~/Downloads/ml4se_images/`. The directory is a
+manifest + cleanup.sh bookmark. Called out explicitly in the tutorial.
+
+### What we tested
+
+Unit (no docker, 22 tests):
+- `test_image_selection.py`: grouping/sort order, tie-break, estimate lookup, top-K
+  caps by count, caps by budget, oversized-first-bucket flag, deterministic ordering,
+  empty input, format output
+- `test_prebuild_manifest.py`: JSON round-trip, cleanup script contains every tag,
+  empty manifest, executable bit, shell-quote safety, env+instance tag union
+- `test_priority_filter.py`: priority filter-and-reorder, skip list still honored,
+  unknown IDs dropped, fallback to shuffle, YAML round-trip, missing file = empty
+
+Smoke (real docker, pytest-dev 5.4 bucket, 4 instances, ~7 GB):
+- prebuild → `docker images` confirms 4 new `sweb.eval.*` tags
+- pipeline on 2 of those instances → log: `Found 2 existing instance images. Will reuse them.`
+- cleanup → `docker system df` shows freed bytes
+
+### Pipeline log signal
+
+The harness already prints this when reusing prebuilt images (see
+`swebench/harness/run_evaluation.py:324`):
+
+```
+Found N existing instance images. Will reuse them.
+```
+
+Grep logs for this line to verify prebuild is effective.
+
+### Open questions / limitations
+
+- Env image size lookup is coarse. For repos not in `REPO_ENV_SIZE_GB` we fall back
+  to 5 GB — noticeably wrong for tiny packages (requests ≈ 1.5 GB).
+- No automatic disk-pressure check before prebuild (would need to parse
+  `docker system df` and compare against free VM space). For now the user manages it.
+- Prebuild could OOM the same envs that OOM during pipeline eval (scikit-learn,
+  astropy). The skip list filters them out, but that means those buckets are never
+  candidates for prebuild. Acceptable trade-off.
+- Priority YAML is autogenerated and written to `configs/` on every CLI run, including
+  `--dry-run`. Could be considered a side-effect of dry-run; left as-is for now so
+  users can generate the YAML without committing to a build.
+
+### A/B measurement (added after phase 7 landed)
+
+Before committing to a full prebuild I measured the actual speedup on a clean A/B.
+Setup: 4 pytest-dev/pytest 5.4 images already prebuilt, gold patches, `smoke_prebuild`
+script with explicit `--instance-id` and wall-clock timer, `require_reuse=0` for the
+cold arm.
+
+- removed one prebuilt image: `docker rmi sweb.eval.x86_64.pytest-dev__pytest-7205:latest`
+- COLD: eval pytest-7205 → harness builds `sweb.eval.*` fresh, then removes it
+  (matches the "no prebuild" behavior under `cache_level=env`, `clean=False`):
+  **135.5 s** wall-clock, marker "Will reuse them" absent
+- WARM: eval pytest-7236 → harness reuses prebuilt image:
+  **55.7 s** wall-clock, marker present
+
+**2.43× wall-clock speedup per instance; ~4× on the Docker portion alone**
+(wall-clock minus ~30 s HF dataset + predictions write overhead: 105 s → 26 s).
+
+Per-instance savings: ~80 s. On a 36-instance bucket that's ~48 minutes shaved.
+Verdict: ship full prebuild for the top bucket.
+
+### Full prebuild run
+
+Ran on top-1 bucket: `django/django@4.0` (36 instances), 50 GB budget, 3 then 2 workers.
+
+**First pass (workers=3):** 10/36 built, 26 failed. Root cause: transient
+`git clone https://github.com/django/django` failures with GnuTLS recv errors when
+3 parallel clones contended over the network. Not OOM, not a code issue. Example
+from `logs/build_images/.../django__django-14311/build_image.log`:
+
+```
+error: RPC failed; curl 6 GnuTLS recv error (-110): The TLS connection was non-properly terminated.
+fatal: error reading section header 'shallow-info'
+```
+
+**Second pass (workers=2):** re-ran the same CLI, `prepare_main` skipped the 10
+already-built images and retried the 26 failures. All 26 built successfully in
+~45 minutes. Final state: 36 django/4.0 instance images + 3 pytest-dev/5.4
+images remaining from the earlier smoke.
+
+**Disk reality vs. manifest:** manifest reports `total_size_bytes = 165 GB`
+(sum of per-image `docker images --format "{{.Size}}"`). Actual increase in Docker
+VM disk from prebuild: **~11 GB** (Mac free went 446 → 435 GB, Docker `Images`
+total went 104.3 → 113.5 GB). The 165 GB number double-counts the shared env
+layer — each of the 36 images inherits the same ~4 GB `sweb.env.py.x86_64.*`
+base. Keep this in mind; our `estimate_bucket_gb` heuristic is also too
+conservative (claimed 47.2 GB for what became ~11 GB real).
+
+**Sanity smoke on a newly-built django image:**
+
+```
+instance:       django__django-14122
+wall_clock:     89.4 s
+reuse marker:   True
+gold resolved:  True
+unremoved imgs: 39
+```
+
+Django is bigger than pytest (more tests, larger repo) so wall-clock is higher
+than pytest warm (55.7 s), but the image-reuse signal is what we wanted.
+
+### Lesson for next time
+
+- Default `workers=4` in the CLI is too aggressive for large repos (django). For
+  initial prebuilds of a single big bucket, use `workers=2`. Future improvement:
+  dynamic worker count based on repo size, or exponential-backoff retry of failed
+  clones inside `prepare_main` (would need a PR upstream or a local wrapper).
+- Disk estimator overcounts by a factor of ~4×. Not a correctness bug (it errs
+  safe), but documentation should say "ceiling, not point estimate".
+

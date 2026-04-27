@@ -1,0 +1,18 @@
+# @package _global_
+# Full run: rope rename obfuscation over 310 instances.
+# Run with:
+#   uv run python -m swebench_task --config-name=exp_rope_rename_full
+defaults:
+  - default
+  - override /repo_obfuscation: rope_rename
+  - _self_
+
+experiment_name: mini_rope_rename_full
+samples_limit: 100
+
+agent:
+  concurrency: 16
+
+eval:
+  max_workers: 2
+  timeout: 1800

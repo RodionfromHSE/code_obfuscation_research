@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
@@ -26,20 +27,36 @@ class SWEBenchInstance:
     version: str
 
 
+def _configs_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "configs"
+
+
 def load_skip_list(path: Path | None = None) -> set[str]:
     """Load instance IDs to skip from a YAML file."""
     if path is None:
-        default = Path(__file__).resolve().parents[1] / "configs" / "docker_skip.yaml"
+        default = _configs_dir() / "docker_skip.yaml"
         if default.exists():
             path = default
         else:
             return set()
-    import yaml
     data = yaml.safe_load(path.read_text())
     ids = set(data.get("skip_instance_ids", []))
     if ids:
         logger.info("Loaded skip list: %d instance IDs from %s", len(ids), path.name)
     return ids
+
+
+def load_instance_order(path: Path | None = None) -> list[str] | None:
+    """Load a frozen, shuffled ordering of instance IDs. Returns None if no file."""
+    if path is None:
+        default = _configs_dir() / "instance_order.yaml"
+        if not default.exists():
+            return None
+        path = default
+    data = yaml.safe_load(path.read_text())
+    ordered = data.get("ordered_instance_ids", [])
+    logger.info("Loaded instance order: %d IDs from %s", len(ordered), path.name)
+    return ordered
 
 
 def load_instances(
@@ -48,24 +65,49 @@ def load_instances(
     limit: int | None = None,
     skip_ids: set[str] | None = None,
     shuffle_seed: int | None = 42,
+    order_file: Path | None = None,
+    priority_ids: list[str] | None = None,
 ) -> list[SWEBenchInstance]:
-    """Load SWE-bench instances, optionally shuffled and sliced.
+    """Load SWE-bench instances.
 
-    The HF dataset is ordered by repo, so without shuffling a `limit`
-    would give a heavily skewed repo distribution.  Seeded shuffle
-    ensures reproducibility while giving a diverse sample.
+    Order resolution:
+      1. If `priority_ids` is given: keep ONLY those IDs, in the given order.
+         Used by the prebuild workflow to run the pipeline against prebuilt images.
+         Skip list is still honored.
+      2. Else if `instance_order.yaml` (or `order_file`) exists: use that exact ordering,
+         filter by current skip list. Adding to the skip list only removes items;
+         the surviving prefix is identical to the prior run.
+      3. Else: shuffle ALL instances with `shuffle_seed`, then filter by skip list.
+         This still gives stable ordering across skip-list edits (new entries just
+         drop out of the stream).
     """
     if skip_ids is None:
         skip_ids = load_skip_list()
 
     ds = load_dataset(dataset_name, split=split)
-    instances = []
+    all_rows = {row["instance_id"]: row for row in ds}
+
+    if priority_ids:
+        ordering = [iid for iid in priority_ids if iid in all_rows]
+        order_label = f"priority={len(ordering)}"
+    else:
+        ordered_ids = load_instance_order(order_file)
+        if ordered_ids is not None:
+            ordering = [iid for iid in ordered_ids if iid in all_rows]
+            order_label = "frozen"
+        else:
+            ordering = list(all_rows.keys())
+            if shuffle_seed is not None:
+                random.Random(shuffle_seed).shuffle(ordering)
+            order_label = f"seed={shuffle_seed}"
+
+    instances: list[SWEBenchInstance] = []
     skipped = 0
-    for row in ds:
-        iid = row["instance_id"]
+    for iid in ordering:
         if iid in skip_ids:
             skipped += 1
             continue
+        row = all_rows[iid]
         instances.append(SWEBenchInstance(
             instance_id=iid,
             repo=row["repo"],
@@ -79,42 +121,42 @@ def load_instances(
             version=row.get("version", ""),
         ))
 
-    if shuffle_seed is not None:
-        random.Random(shuffle_seed).shuffle(instances)
-
     if limit:
         instances = instances[:limit]
 
-    logger.info("Loaded %d instances from %s (skipped %d from skip list)",
-                len(instances), dataset_name, skipped)
+    logger.info("Loaded %d instances from %s (skipped %d, order=%s)",
+                len(instances), dataset_name, skipped, order_label)
     return instances
 
 
 def clone_repo(
     instance: SWEBenchInstance,
     work_dir: Path,
+    shallow: bool = True,
 ) -> Path:
-    """Clone the repo at the base_commit into work_dir/{instance_id}/."""
+    """Clone the repo at base_commit into work_dir/{instance_id}/.
+
+    `shallow=True` uses `--filter=blob:none` (partial clone): fetches the full commit
+    graph but defers blob downloads until checkout. Typical 5-10x faster for large
+    repos (Django, sklearn) with no observable downside for SWE-bench's use.
+    """
     repo_dir = work_dir / instance.instance_id.replace("/", "__")
     if repo_dir.exists():
         logger.debug("Repo already cloned at %s", repo_dir)
         return repo_dir
 
     repo_url = f"https://github.com/{instance.repo}.git"
-    logger.debug("Cloning %s at %s", repo_url, instance.base_commit)
+    logger.debug("Cloning %s at %s (shallow=%s)", repo_url, instance.base_commit, shallow)
 
-    subprocess.run(
-        ["git", "clone", "--quiet", repo_url, str(repo_dir)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    clone_cmd = ["git", "clone", "--quiet"]
+    if shallow:
+        clone_cmd += ["--filter=blob:none"]
+    clone_cmd += [repo_url, str(repo_dir)]
+
+    subprocess.run(clone_cmd, check=True, capture_output=True, text=True)
     subprocess.run(
         ["git", "checkout", "--quiet", instance.base_commit],
-        cwd=repo_dir,
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=repo_dir, check=True, capture_output=True, text=True,
     )
     logger.debug("Cloned %s -> %s", instance.repo, repo_dir)
     return repo_dir
