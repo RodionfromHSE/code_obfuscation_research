@@ -1,0 +1,18 @@
+# @package _global_
+# Full run: identity baseline over 310 instances.
+# Run with:
+#   uv run python -m swebench_task --config-name=exp_identity_full
+defaults:
+  - default
+  - override /repo_obfuscation: identity
+  - _self_
+
+experiment_name: mini_identity_full
+samples_limit: 100
+
+agent:
+  concurrency: 16
+
+eval:
+  max_workers: 2
+  timeout: 1800
