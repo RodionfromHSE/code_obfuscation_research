@@ -51,7 +51,7 @@ All parameters are [Hydra](https://hydra.cc/) overrides on top of
 | `agent.cost_limit` | `3.0` | USD cost limit per instance |
 | `agent.timeout_seconds` | `1200` | Per-instance wall-clock timeout |
 | `agent.concurrency` | `1` | Concurrent agents via asyncio.Semaphore + to_thread. Bump to 8-16 for big runs |
-| `cache.enabled` | `true` | Global cross-experiment cache keyed by (obfuscation, model, instance_id) |
+| `cache.enabled` | `true` | Global cross-experiment cache keyed by path plus a run fingerprint |
 | `cache.read_only` | `false` | If true, cache is read-only (useful for re-scoring without re-writing) |
 | `eval.max_workers` | `4` | Docker eval parallelism. Lower to 2 for heavy envs (sklearn/astropy) |
 | `eval.timeout` | `1800` | Per-instance Docker eval timeout in seconds |
@@ -73,7 +73,7 @@ SWE-bench Verified (HuggingFace)
 load_instances()  ──>  [SWEBenchInstance, ...]  (order from instance_order.yaml)
     |
     |  per instance (optionally concurrent):
-    |    cache.get(obf, model, iid)  ──> hit? return. miss? ↓
+    |    cache.get(obf, model, iid, fingerprint)  ──> hit? return. miss? ↓
     |    clone_repo()                 (--filter=blob:none)
     |    obfuscated_repo()            — temp copy + rope rename + git commit
     |    run_agent()                  — mini-swe-agent on obfuscated code
@@ -164,7 +164,7 @@ artifacts/
 │   ├── summary.json                  # aggregate stats
 │   └── instance_reports/
 │       └── django__django-16527.json # per-instance detail
-├── cache/                            # global cross-experiment results cache
+├── cache/                            # global cache; JSON entries include run fingerprints
 │   └── <obfuscation>/<model>/<instance_id>.json
 └── logs/
     └── <experiment_name>.log         # verbose debug log

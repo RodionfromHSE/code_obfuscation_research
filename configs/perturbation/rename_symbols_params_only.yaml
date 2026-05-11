@@ -1,6 +1,6 @@
 _target_: code_obfuscation_research.perturbations.python_rename_symbols.RenameSymbolsPerturbation
-name: rename_symbols
-rename_functions: true
-rename_classes: true
+name: rename_symbols_params_only
+rename_functions: false
+rename_classes: false
 rename_variables: false
-rename_parameters: false
+rename_parameters: true

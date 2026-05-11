@@ -1,0 +1,5 @@
+_target_: code_obfuscation_research.datasets.multipl_e.MultiPLEDatasetAdapter
+hf_dataset_name: nuprl/MultiPL-E
+hf_config: humaneval-js
+split: test
+language: javascript

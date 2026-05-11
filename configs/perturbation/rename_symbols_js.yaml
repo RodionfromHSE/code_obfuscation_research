@@ -1,0 +1,5 @@
+_target_: code_obfuscation_research.perturbations.js_rename_symbols.RenameSymbolsJSPerturbation
+name: rename_symbols_js
+rename_functions: true
+rename_classes: true
+rename_parameters: false

@@ -16,7 +16,7 @@ from swebench_task.evaluation.swebench_eval import (
 from swebench_task.obfuscation.protocol import RepoObfuscation
 from swebench_task.obfuscation.repo_copy import obfuscated_repo
 from swebench_task.source.async_runner import run_bounded_ordered
-from swebench_task.source.cache import CacheKey, RunCache, has_reusable_eval_result
+from swebench_task.source.cache import CacheKey, RunCache, build_cache_key, has_reusable_eval_result
 from swebench_task.source.dataset import SWEBenchInstance, clone_repo, load_instances
 from swebench_task.utils.reporting import InstanceReport, save_instance_report, save_summary_report
 
@@ -67,6 +67,7 @@ def _run_agent_on_instance(
 def _process_instance(
     instance: SWEBenchInstance,
     obfuscation: RepoObfuscation,
+    cache_key: CacheKey,
     work_dir: Path,
     reports_dir: Path,
     model_name: str,
@@ -80,7 +81,7 @@ def _process_instance(
 ) -> tuple[AgentRunResult, InstanceReport, bool]:
     """Returns (agent_result, report, was_cached)."""
     if cache is not None:
-        hit = cache.get(CacheKey(obfuscation.name, model_name, instance.instance_id))
+        hit = cache.get(cache_key)
         if hit is not None:
             save_instance_report(hit, reports_dir)
             tier = "full" if has_reusable_eval_result(hit) else "agent-only"
@@ -202,10 +203,25 @@ def run_swebench_pipeline(
         "on" if cache_enabled else "off",
     )
 
+    def _cache_key(inst: SWEBenchInstance) -> CacheKey:
+        return build_cache_key(
+            instance=inst,
+            obfuscation=obfuscation,
+            dataset_name=dataset_name,
+            split=split,
+            model_name=model_name,
+            max_turns=max_turns,
+            cost_limit=cost_limit,
+            timeout_seconds=timeout_seconds,
+            api_base=api_base,
+            cost_tracking=cost_tracking,
+        )
+
     def _process(inst: SWEBenchInstance):
         return _process_instance(
             instance=inst,
             obfuscation=obfuscation,
+            cache_key=_cache_key(inst),
             work_dir=work_dir,
             reports_dir=reports_dir,
             model_name=model_name,
@@ -225,8 +241,8 @@ def run_swebench_pipeline(
 
     all_reports = [r[1] for r in phase_results]
 
-    for report in all_reports:
-        cache.put(CacheKey(obfuscation.name, model_name, report.instance_id), report)
+    for report, instance in zip(all_reports, instances):
+        cache.put(_cache_key(instance), report)
 
     needs_eval = [
         (r, inst) for r, inst in zip(all_reports, instances)
@@ -255,10 +271,10 @@ def run_swebench_pipeline(
                 report_dir=run_dir,
             )
             eval_map = {r.instance_id: r for r in eval_results}
-            for report in all_reports:
+            for report, instance in zip(all_reports, instances):
                 if report.instance_id in eval_map:
                     report.eval_result = eval_map[report.instance_id]
-                    cache.put(CacheKey(obfuscation.name, model_name, report.instance_id), report)
+                    cache.put(_cache_key(instance), report)
         except Exception as e:
             logger.error("SWE-bench evaluation failed: %s", e)
 

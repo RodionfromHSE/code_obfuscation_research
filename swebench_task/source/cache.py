@@ -1,6 +1,7 @@
 """Global, cross-experiment cache of per-instance results.
 
-Key = (obfuscation_name, model_name, instance_id).
+Path key = (obfuscation_name, model_name, instance_id).
+Validation key = deterministic run fingerprint stored inside the JSON.
 
 Two-tier reuse:
     - Agent reuse:  agent ran to completion (any of resolved/failed/empty_patch/
@@ -15,6 +16,7 @@ Statuses NEVER cached (transient / non-deterministic):
     - eval_error    (Docker OOM, network, etc.)
 """
 import dataclasses
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -22,7 +24,8 @@ from pathlib import Path
 
 from swebench_task.agent.runner import AgentRunResult
 from swebench_task.evaluation.swebench_eval import SWEBenchEvalResult
-from swebench_task.obfuscation.protocol import RepoObfuscationResult
+from swebench_task.obfuscation.protocol import RepoObfuscation, RepoObfuscationResult
+from swebench_task.source.dataset import SWEBenchInstance
 from swebench_task.utils.reporting import InstanceReport, atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -37,11 +40,98 @@ class CacheKey:
     obfuscation_name: str
     model_name: str
     instance_id: str
+    fingerprint: str | None = None
 
     def as_path(self, root: Path) -> Path:
         safe_model = self.model_name.replace("/", "__")
         safe_iid = self.instance_id.replace("/", "__")
         return root / self.obfuscation_name / safe_model / f"{safe_iid}.json"
+
+
+def build_cache_key(
+    instance: SWEBenchInstance,
+    obfuscation: RepoObfuscation,
+    dataset_name: str,
+    split: str,
+    model_name: str,
+    max_turns: int,
+    cost_limit: float,
+    timeout_seconds: float,
+    api_base: str | None,
+    cost_tracking: str,
+) -> CacheKey:
+    payload = {
+        "version": 2,
+        "dataset": {
+            "name": dataset_name,
+            "split": split,
+        },
+        "instance": {
+            "instance_id": instance.instance_id,
+            "repo": instance.repo,
+            "base_commit": instance.base_commit,
+            "problem_sha256": hashlib.sha256(
+                instance.problem_statement.encode()
+            ).hexdigest(),
+        },
+        "obfuscation": _obfuscation_state(obfuscation),
+        "agent": {
+            "model_name": model_name,
+            "max_turns": max_turns,
+            "cost_limit": cost_limit,
+            "timeout_seconds": timeout_seconds,
+            "api_base": api_base,
+            "cost_tracking": cost_tracking,
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return CacheKey(
+        obfuscation_name=obfuscation.name,
+        model_name=model_name,
+        instance_id=instance.instance_id,
+        fingerprint=hashlib.sha256(raw.encode()).hexdigest(),
+    )
+
+
+def _jsonable(value):
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            str(k): _jsonable(v)
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, list | tuple):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, set | frozenset):
+        return [_jsonable(v) for v in sorted(value, key=repr)]
+    if dataclasses.is_dataclass(value):
+        return _jsonable(dataclasses.asdict(value))
+    return repr(value)
+
+
+def _obfuscation_state(obfuscation: RepoObfuscation) -> dict:
+    return {
+        "class": f"{type(obfuscation).__module__}.{type(obfuscation).__qualname__}",
+        "attrs": _public_attrs(obfuscation),
+    }
+
+
+def _public_attrs(obj) -> dict:
+    names = set(getattr(obj, "__dict__", {}).keys())
+    for cls in type(obj).mro():
+        slots = getattr(cls, "__slots__", ())
+        if isinstance(slots, str):
+            names.add(slots)
+        else:
+            names.update(slots)
+    return {
+        name: _jsonable(getattr(obj, name))
+        for name in sorted(names)
+        if not name.startswith("_") and hasattr(obj, name)
+    }
 
 
 def has_reusable_agent_result(report: InstanceReport) -> bool:
@@ -76,10 +166,14 @@ class RunCache:
         if not path.exists():
             return None
         try:
-            report = _load_report(path)
+            data = _load_report_data(path)
         except Exception as e:
             logger.warning("Cache read failed for %s: %s", path, e)
             return None
+        if not _matches_key(data, key):
+            logger.debug("Cache entry ignored because key metadata is stale: %s", path)
+            return None
+        report = _report_from_data(data)
         if not has_reusable_agent_result(report):
             return None
         return report
@@ -96,12 +190,13 @@ class RunCache:
             return
         path = key.as_path(self.cache_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, _dump_report(report))
+        atomic_write_text(path, _dump_report(report, key.fingerprint))
         logger.debug("Cached %s (status=%s) -> %s", key.instance_id, report.status(), path)
 
 
-def _dump_report(report: InstanceReport) -> str:
+def _dump_report(report: InstanceReport, fingerprint: str | None = None) -> str:
     data = {
+        "cache_fingerprint": fingerprint,
         "instance_id": report.instance_id,
         "obfuscation_name": report.obfuscation_name,
         "status": report.status(),
@@ -112,8 +207,24 @@ def _dump_report(report: InstanceReport) -> str:
     return json.dumps(data, indent=2)
 
 
-def _load_report(path: Path) -> InstanceReport:
-    data = json.loads(path.read_text())
+def _load_report_data(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def _matches_key(data: dict, key: CacheKey) -> bool:
+    if data.get("instance_id") != key.instance_id:
+        return False
+    if data.get("obfuscation_name") != key.obfuscation_name:
+        return False
+    agent = data.get("agent") or {}
+    if agent.get("instance_id") != key.instance_id:
+        return False
+    if key.fingerprint is not None and data.get("cache_fingerprint") != key.fingerprint:
+        return False
+    return True
+
+
+def _report_from_data(data: dict) -> InstanceReport:
     obfus = RepoObfuscationResult(**data["obfuscation"])
     agent = AgentRunResult(**data["agent"])
     eval_data = data.get("eval")

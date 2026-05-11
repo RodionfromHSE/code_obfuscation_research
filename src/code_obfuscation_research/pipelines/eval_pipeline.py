@@ -18,6 +18,7 @@ from code_obfuscation_research.evaluation.deepeval_runner import (
     run_correctness,
 )
 from code_obfuscation_research.evaluation.humaneval_exec import run_humaneval_exec
+from code_obfuscation_research.evaluation.multipl_e_js_exec import run_multipl_e_js_exec
 from code_obfuscation_research.runtime.store import RunStore
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,21 @@ def _is_humaneval_record(record: RunRecord) -> bool:
     task_type = record.metadata.get("task_type")
     if task_type == "humaneval":
         return True
+    language = record.metadata.get("language")
+    if language not in (None, "python"):
+        return False
+    return (
+        isinstance(record.metadata.get("prompt"), str)
+        and isinstance(record.metadata.get("test"), str)
+        and isinstance(record.metadata.get("entry_point"), str)
+    )
+
+
+def _is_multipl_e_js_record(record: RunRecord) -> bool:
+    if record.metadata.get("task_type") == "multipl_e_humaneval_js":
+        return True
+    if record.metadata.get("language") != "javascript":
+        return False
     return (
         isinstance(record.metadata.get("prompt"), str)
         and isinstance(record.metadata.get("test"), str)
@@ -36,6 +52,10 @@ def _is_humaneval_record(record: RunRecord) -> bool:
 
 def _filter_for_humaneval_exec(records: list[RunRecord]) -> list[RunRecord]:
     return [record for record in records if _is_humaneval_record(record)]
+
+
+def _filter_for_multipl_e_js_exec(records: list[RunRecord]) -> list[RunRecord]:
+    return [record for record in records if _is_multipl_e_js_record(record)]
 
 
 def _records_to_eval_cases(records: list[RunRecord]) -> list[EvalCase]:
@@ -94,18 +114,22 @@ def evaluate(cfg: DictConfig) -> None:
     evaluator_cfg = cfg.evaluator
     evaluator_type = evaluator_cfg.type
 
-    if evaluator_type == "humaneval_exec":
+    exec_filters = {
+        "humaneval_exec": ("HumanEval", _filter_for_humaneval_exec),
+        "multipl_e_js_exec": ("MultiPL-E JS", _filter_for_multipl_e_js_exec),
+    }
+    if evaluator_type in exec_filters:
+        label, filter_fn = exec_filters[evaluator_type]
         total_records = len(all_records)
-        all_records = _filter_for_humaneval_exec(all_records)
+        all_records = filter_fn(all_records)
         logger.info(
-            "Filtered records for humaneval_exec: kept %d/%d",
-            len(all_records),
-            total_records,
+            "Filtered records for %s: kept %d/%d",
+            evaluator_type, len(all_records), total_records,
         )
-        print(f"Filtered records for humaneval_exec: {len(all_records)}/{total_records}")
+        print(f"Filtered records for {evaluator_type}: {len(all_records)}/{total_records}")
         if not all_records:
-            logger.warning("No HumanEval-compatible records found in %s", runs_dir)
-            print("No HumanEval-compatible records found for humaneval_exec.")
+            logger.warning("No %s-compatible records found in %s", label, runs_dir)
+            print(f"No {label}-compatible records found for {evaluator_type}.")
             return
 
     limit = cfg.get("samples_limit")
@@ -141,12 +165,18 @@ def evaluate(cfg: DictConfig) -> None:
             run_humaneval_exec(c, timeout_seconds=timeout_seconds)
             for c in tqdm(cases, desc="Evaluating", unit="case")
         ]
+    elif evaluator_type == "multipl_e_js_exec":
+        timeout_seconds = evaluator_cfg.get("timeout_seconds", 10.0)
+        results = [
+            run_multipl_e_js_exec(c, timeout_seconds=timeout_seconds)
+            for c in tqdm(cases, desc="Evaluating", unit="case")
+        ]
     else:
         raise ValueError(f"Unknown evaluator type: {evaluator_type}")
 
     _save_results(Path(evals_dir), experiment_name, results)
     _print_summary(results)
-    if evaluator_type == "humaneval_exec":
+    if evaluator_type in exec_filters:
         _print_failed_ids(results)
 
 

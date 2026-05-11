@@ -81,7 +81,7 @@ uv run python -m swebench_task.evaluation.oom_audit
 - After obfuscation, `git commit` establishes baseline so `git diff` captures only agent changes
 - Deobfuscation uses regex word-boundary replacement (not rope in reverse) — fast, no syntax needed
 - Skip list (`configs/docker_skip.yaml`) auto-loaded; `configs/instance_order.yaml` freezes shuffle
-- Cache (`artifacts/cache/`) is global; only caches non-infra statuses. Never caches eval_error
+- Cache (`artifacts/cache/`) is global; entries are validated by run fingerprint. Never caches eval_error
 - `agent.concurrency > 1` uses asyncio + to_thread; rope's signal-based timeout no-ops in worker threads
 - Third-party noise (litellm, mini-swe-agent, HuggingFace) suppressed via env vars + logger config
 
