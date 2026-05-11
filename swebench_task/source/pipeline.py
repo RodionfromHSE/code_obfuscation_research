@@ -1,7 +1,7 @@
 """SWE-bench pipeline: load instances -> obfuscate -> run agent -> evaluate -> report."""
 import dataclasses
+import json
 import logging
-import shutil
 import sys
 from pathlib import Path
 
@@ -9,10 +9,11 @@ from tqdm import tqdm
 
 from swebench_task.agent.runner import AgentRunResult, run_agent
 from swebench_task.evaluation.swebench_eval import (
+    SWEBenchEvalResult,
     run_swebench_eval,
     save_predictions,
 )
-from swebench_task.obfuscation.protocol import RepoObfuscation
+from swebench_task.obfuscation.protocol import RepoObfuscation, RepoObfuscationResult
 from swebench_task.obfuscation.repo_copy import obfuscated_repo
 from swebench_task.source.dataset import SWEBenchInstance, clone_repo, load_instances
 from swebench_task.utils.reporting import InstanceReport, save_instance_report, save_summary_report
@@ -20,11 +21,58 @@ from swebench_task.utils.reporting import InstanceReport, save_instance_report, 
 logger = logging.getLogger(__name__)
 
 
+def _report_path(reports_dir: Path, instance_id: str) -> Path:
+    return reports_dir / f"{instance_id.replace('/', '__')}.json"
+
+
+def _load_instance_report(path: Path) -> InstanceReport:
+    data = json.loads(path.read_text())
+    eval_data = data.get("eval")
+    return InstanceReport(
+        instance_id=data["instance_id"],
+        obfuscation_name=data["obfuscation_name"],
+        obfuscation=RepoObfuscationResult(**data["obfuscation"]),
+        agent=AgentRunResult(**data["agent"]),
+        eval_result=SWEBenchEvalResult(**eval_data) if eval_data else None,
+    )
+
+
+def _is_transient_agent_error(report: InstanceReport) -> bool:
+    error = report.agent.error or ""
+    non_retryable_errors = (
+        "ContextWindowExceededError",
+        "longer than the model's context length",
+        "exceeds the maximum allowed length",
+        "maximum context length",
+        "Use a shorter input",
+        "--allow-auto-truncate",
+    )
+    if any(err in error for err in non_retryable_errors):
+        return False
+    if error and report.agent.n_llm_calls == 0:
+        return True
+    transient_errors = (
+        "Connection refused",
+        "ConnectError",
+        "InternalServerError",
+        "Hosted_vllmException",
+        "ReadTimeout",
+        "APITimeoutError",
+    )
+    return any(err in error for err in transient_errors)
+
+
+def _should_resume_report(report: InstanceReport) -> bool:
+    return not _is_transient_agent_error(report)
+
+
 def _process_instance(
     instance: SWEBenchInstance,
     obfuscation: RepoObfuscation,
     work_dir: Path,
     reports_dir: Path,
+    transcripts_dir: Path,
+    raw_responses_dir: Path,
     model_name: str,
     max_turns: int,
     cost_limit: float,
@@ -45,6 +93,8 @@ def _process_instance(
             timeout_seconds=timeout_seconds,
             api_base=api_base,
             cost_tracking=cost_tracking,
+            transcripts_dir=transcripts_dir,
+            raw_responses_dir=raw_responses_dir,
         )
         clean_patch = obfuscation.deobfuscate_patch(
             agent_result.model_patch, ctx.result,
@@ -98,9 +148,9 @@ def run_swebench_pipeline(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     run_dir = output_dir / experiment_name
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
     reports_dir = run_dir / "instance_reports"
+    transcripts_dir = run_dir / "agent_transcripts"
+    raw_responses_dir = run_dir / "raw_model_responses"
 
     logger.info("Pipeline: %d instances, obfuscation=%s, model=%s",
                 len(instances), obfuscation.name, model_name)
@@ -108,21 +158,51 @@ def run_swebench_pipeline(
     all_reports: list[InstanceReport] = []
 
     for idx, instance in enumerate(tqdm(instances, desc="SWE-bench", unit="inst", file=sys.stdout), 1):
-        agent_result, report = _process_instance(
-            instance=instance,
-            obfuscation=obfuscation,
-            work_dir=work_dir,
-            reports_dir=reports_dir,
-            model_name=model_name,
-            max_turns=max_turns,
-            cost_limit=cost_limit,
-            timeout_seconds=timeout_seconds,
-            api_base=api_base,
-            cost_tracking=cost_tracking,
-        )
+        existing_report = _report_path(reports_dir, instance.instance_id)
+        if existing_report.exists():
+            report = _load_instance_report(existing_report)
+            if _should_resume_report(report):
+                agent_result = report.agent
+                logger.info("[%d/%d] %s | resumed status=%s", idx, len(instances), report.instance_id, report.status())
+            else:
+                logger.info("[%d/%d] %s | retrying transient agent error", idx, len(instances), report.instance_id)
+                agent_result, report = _process_instance(
+                    instance=instance,
+                    obfuscation=obfuscation,
+                    work_dir=work_dir,
+                    reports_dir=reports_dir,
+                    transcripts_dir=transcripts_dir,
+                    raw_responses_dir=raw_responses_dir,
+                    model_name=model_name,
+                    max_turns=max_turns,
+                    cost_limit=cost_limit,
+                    timeout_seconds=timeout_seconds,
+                    api_base=api_base,
+                    cost_tracking=cost_tracking,
+                )
+        else:
+            agent_result, report = _process_instance(
+                instance=instance,
+                obfuscation=obfuscation,
+                work_dir=work_dir,
+                reports_dir=reports_dir,
+                transcripts_dir=transcripts_dir,
+                raw_responses_dir=raw_responses_dir,
+                model_name=model_name,
+                max_turns=max_turns,
+                cost_limit=cost_limit,
+                timeout_seconds=timeout_seconds,
+                api_base=api_base,
+                cost_tracking=cost_tracking,
+            )
         agent_results.append(agent_result)
         all_reports.append(report)
         _log_instance_progress(idx, len(instances), report)
+        if _is_transient_agent_error(report):
+            raise RuntimeError(
+                f"Transient agent error on {report.instance_id}; "
+                "stop this run so the resumable wrapper can restart it."
+            )
 
     predictions_path = output_dir / experiment_name / "predictions.jsonl"
     save_predictions(agent_results, predictions_path, model_name)

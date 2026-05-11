@@ -4,7 +4,7 @@
 
 SWE-bench obfuscation experiment: measure how code obfuscation degrades an LLM coding agent on real-world GitHub issues.
 
-- Agent model: `gpt-5.4-nano-2026-03-17` (via litellm)
+- Agent model: `gpt-5.4-nano-2026-03-17` (OpenAI) or `Qwen/Qwen3-8B` (local vLLM)
 - Agent harness: `mini-swe-agent` v2.2.8
 - Dataset: `SWE-bench/SWE-bench_Verified` (500 instances, HuggingFace)
 - Obfuscation: cross-file symbol rename via `rope`
@@ -33,6 +33,23 @@ uv run python -m swebench_task model=claude_sonnet samples_limit=3
 
 # full 500 instances (requires Docker, ~$500+ in API costs)
 uv run python -m swebench_task repo_obfuscation=rope_rename
+```
+
+### Local model (vLLM)
+
+Start the vLLM server first, then use a vLLM model config:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3-8B --port 8000 --max-model-len 4096
+
+uv run python -m swebench_task model=vllm_qwen3 samples_limit=3
+uv run python -m swebench_task model=vllm_qwen3 repo_obfuscation=rope_rename samples_limit=3
+```
+
+Or override model inline:
+
+```bash
+uv run python -m swebench_task agent.model_name=hosted_vllm/Qwen/Qwen3-8B agent.api_base=http://localhost:8000/v1 agent.cost_tracking=ignore_errors samples_limit=3
 ```
 
 All parameters are Hydra overrides on [configs/default.yaml](configs/default.yaml).
@@ -72,5 +89,7 @@ All parameters are Hydra overrides on [configs/default.yaml](configs/default.yam
 **New obfuscation**: implement `RepoObfuscation` protocol (`obfuscate()` + `deobfuscate_patch()`), add YAML in `configs/repo_obfuscation/` with `_target_` pointing to your class. Run with `repo_obfuscation=your_name`.
 
 **New model**: add a YAML in `configs/model/` setting `agent.model_name` (litellm format) and cost/timeout defaults. Run with `model=your_name`. Or override directly: `agent.model_name=openai/gpt-4o-mini`.
+
+**New local model**: add a YAML in `configs/model/` with `agent.model_name` in `hosted_vllm/<model>` format, `agent.api_base` pointing to vLLM server, and `agent.cost_tracking: ignore_errors`. See `configs/model/vllm_qwen3.yaml` as template.
 
 **Different dataset/split**: override `dataset.name` and `dataset.split`. The loader expects SWE-bench schema (instance_id, repo, base_commit, problem_statement, patch, test_patch).

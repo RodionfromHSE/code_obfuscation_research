@@ -2,12 +2,14 @@
 import ast
 
 from code_obfuscation_research.domain import CodeArtifact, PerturbationInput
+from code_obfuscation_research.perturbations.comment_docstring_strip import CommentDocstringStripPerturbation
 from code_obfuscation_research.perturbations.noop import NoOpPerturbation
+from code_obfuscation_research.perturbations.python_dead_code_insertion import DeadCodeInsertionPerturbation
 from code_obfuscation_research.perturbations.python_rename_symbols import RenameSymbolsPerturbation
 
 
-def _inp(text: str) -> PerturbationInput:
-    return PerturbationInput(code=CodeArtifact(artifact_id="test", text=text))
+def _inp(text: str, language: str = "python") -> PerturbationInput:
+    return PerturbationInput(code=CodeArtifact(artifact_id="test", text=text, language=language))
 
 
 class TestNoOp:
@@ -80,3 +82,48 @@ class TestRenameSymbols:
         assert result.applied
         assert "calculate_total" not in result.perturbed_code.text
         assert "func_0" in result.perturbed_code.text
+
+
+class TestDeadCodeInsertion:
+    def test_inserts_unreachable_python_block(self):
+        code = "def solve():\n    return 1\n"
+        p = DeadCodeInsertionPerturbation()
+        result = p.apply(_inp(code))
+        assert result.applied
+        assert "if False:" in result.perturbed_code.text
+        assert "__obfuscation_dead_code" in result.perturbed_code.text
+        ast.parse(result.perturbed_code.text)
+
+    def test_preserves_future_import_position(self):
+        code = '"""module docs"""\nfrom __future__ import annotations\n\ndef solve():\n    return 1\n'
+        p = DeadCodeInsertionPerturbation()
+        result = p.apply(_inp(code))
+        ast.parse(result.perturbed_code.text)
+        assert result.perturbed_code.text.index("from __future__") < result.perturbed_code.text.index("if False:")
+
+    def test_skips_non_python(self):
+        p = DeadCodeInsertionPerturbation()
+        result = p.apply(_inp("class Solution {}", language="java"))
+        assert not result.applied
+        assert result.warnings
+
+
+class TestCommentDocstringStrip:
+    def test_strips_python_comments_and_docstrings(self):
+        code = '"""module docs"""\n# comment\n\ndef solve():\n    """function docs"""\n    return 1  # inline\n'
+        p = CommentDocstringStripPerturbation()
+        result = p.apply(_inp(code))
+        assert result.applied
+        assert "module docs" not in result.perturbed_code.text
+        assert "function docs" not in result.perturbed_code.text
+        assert "comment" not in result.perturbed_code.text
+        ast.parse(result.perturbed_code.text)
+
+    def test_strips_java_comments_but_preserves_strings(self):
+        code = 'class A { // remove me\n  String s = "http://example.com"; /* block */\n}\n'
+        p = CommentDocstringStripPerturbation()
+        result = p.apply(_inp(code, language="java"))
+        assert result.applied
+        assert "remove me" not in result.perturbed_code.text
+        assert "block" not in result.perturbed_code.text
+        assert "http://example.com" in result.perturbed_code.text

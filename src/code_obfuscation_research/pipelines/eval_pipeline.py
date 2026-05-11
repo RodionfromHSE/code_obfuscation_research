@@ -63,6 +63,8 @@ def _find_run_files(runs_dir: str | Path) -> list[Path]:
     runs_path = Path(runs_dir)
     if not runs_path.exists():
         return []
+    if runs_path.is_file():
+        return [runs_path]
     return sorted(runs_path.glob("*.jsonl"))
 
 

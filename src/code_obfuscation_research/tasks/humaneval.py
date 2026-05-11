@@ -1,4 +1,4 @@
-"""HumanEval task definition for Python function synthesis."""
+"""HumanEval task definition for function synthesis."""
 import re
 
 from code_obfuscation_research.domain import (
@@ -9,13 +9,13 @@ from code_obfuscation_research.domain import (
     ModelResponse,
 )
 
-SYSTEM_PROMPT = (
-    "You are a Python coding assistant. "
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are a {language} coding assistant. "
     "Complete the function implementation. "
-    "Return only Python code, no markdown and no explanation."
+    "Return only {language} code, no markdown and no explanation."
 )
 
-_CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
+_CODE_BLOCK_RE = re.compile(r"```(?:[A-Za-z0-9_+#.-]+)?\s*\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
 
 
 def _extract_code(text: str) -> str:
@@ -32,11 +32,12 @@ class HumanEvalTask:
         self.name = name
 
     def build_request(self, sample: HumanEvalSample, code: CodeArtifact) -> ModelRequest:
+        language = code.language or sample.code.language
         return ModelRequest(
             sample_id=sample.sample_id,
             perturbation_name="",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(language=language)},
                 {"role": "user", "content": code.text},
             ],
             metadata={
@@ -44,6 +45,7 @@ class HumanEvalTask:
                 "entry_point": sample.entry_point,
                 "test": sample.test,
                 "prompt": code.text,
+                "language": language,
             },
         )
 
@@ -72,5 +74,6 @@ class HumanEvalTask:
                 "entry_point": sample.entry_point,
                 "test": sample.test,
                 "prompt": sample.code.text,
+                "language": sample.code.language,
             },
         )

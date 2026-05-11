@@ -35,6 +35,7 @@ def test_build_request():
     assert req.metadata["entry_point"] == sample.entry_point
     assert req.metadata["test"] == sample.test
     assert req.metadata["prompt"] == sample.code.text
+    assert req.metadata["language"] == "python"
 
 
 def test_parse_prediction_extracts_code_fence():
@@ -46,6 +47,17 @@ def test_parse_prediction_extracts_code_fence():
         text="```python\n    return [string[:i+1] for i in range(len(string))]\n```",
     )
     assert task.parse_prediction(sample, resp) == "    return [string[:i+1] for i in range(len(string))]"
+
+
+def test_parse_prediction_extracts_language_fence():
+    task = HumanEvalTask()
+    sample = _make_sample()
+    resp = ModelResponse(
+        sample_id=sample.sample_id,
+        perturbation_name="noop",
+        text="```javascript\nreturn x + 1;\n```",
+    )
+    assert task.parse_prediction(sample, resp) == "return x + 1;"
 
 
 def test_build_eval_case():

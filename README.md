@@ -60,6 +60,15 @@ uv run python scripts/run_experiment.py \
     perturbation.rename_functions=false
 ```
 
+MultiPL-E JavaScript HumanEval-style run (second programming language):
+
+```bash
+uv run python scripts/run_experiment.py \
+    --config-name run/multipl_e_humaneval_js \
+    samples_limit=3 \
+    perturbation=comment_docstring_strip
+```
+
 Evaluate with deterministic execution metric (`humaneval_exec`, pass/fail per sample):
 
 ```bash
@@ -67,6 +76,12 @@ uv run python scripts/run_evaluation.py \
     --config-name eval/humaneval \
     run_artifacts_path=artifacts/runs \
     samples_limit=3
+```
+
+Summarize evaluation artifacts for the report:
+
+```bash
+uv run python scripts/summarize_evaluations.py artifacts/evals
 ```
 
 `eval/humaneval` now auto-filters non-HumanEval run files in `run_artifacts_path`, so mixed folders are safe.
@@ -98,7 +113,7 @@ src/code_obfuscation_research/
   domain/         immutable entities + protocols
   tasks/          task definitions (codeqa, ...)
   datasets/       HuggingFace adapters
-  perturbations/  code-first transforms (noop, rename_symbols)
+  perturbations/  code-first transforms (noop, rename_symbols, dead code, comment/docstring strip)
   models/         LangChain OpenAI adapter
   runtime/        cache, LLM runtime, JSONL store
   evaluation/     evaluator implementations (DeepEval + HumanEval exec)
