@@ -1,0 +1,6 @@
+# @package _global_
+agent:
+  model_name: "openai/gpt-4o"
+  max_turns: 50
+  cost_limit: 5.0
+  timeout_seconds: 1200

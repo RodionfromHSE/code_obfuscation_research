@@ -1,0 +1,8 @@
+# @package _global_
+agent:
+  model_name: "hosted_vllm/Qwen/Qwen3-8B"
+  api_base: "http://localhost:8000/v1"
+  max_turns: 50
+  cost_limit: 0.0
+  timeout_seconds: 1200
+  cost_tracking: "ignore_errors"

@@ -17,6 +17,16 @@ Replaces public function and class names with opaque placeholders using `libcst`
 - Output is validated with `ast.parse()` to guarantee syntactic correctness
 - Stats report `renamed_functions` and `renamed_classes` counts
 
+## dead_code_insertion (`python_dead_code_insertion.py`)
+
+Adds a top-level unreachable Python block after the module docstring and `__future__` imports.
+Output is validated with `ast.parse()`.
+
+## comment_docstring_strip (`comment_docstring_strip.py`)
+
+Removes Python comments/docstrings and C-style comments for Java/JavaScript-like languages.
+Python output is validated with `ast.parse()`.
+
 ## Adding a new perturbation
 
 1. Create a class with `name: str` attribute and `apply(PerturbationInput) -> PerturbationResult`

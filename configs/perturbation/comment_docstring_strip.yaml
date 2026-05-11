@@ -1,0 +1,2 @@
+_target_: code_obfuscation_research.perturbations.comment_docstring_strip.CommentDocstringStripPerturbation
+name: comment_docstring_strip

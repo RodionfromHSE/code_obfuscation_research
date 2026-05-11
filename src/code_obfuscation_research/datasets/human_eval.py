@@ -20,21 +20,29 @@ class HumanEvalDatasetAdapter:
     def __init__(
         self,
         hf_dataset_name: str = "openai/openai_humaneval",
+        hf_config_name: str | None = None,
         split: str = "test",
         language: str = "python",
         local_path: str | None = None,
     ):
         self.hf_dataset_name = hf_dataset_name
+        self.hf_config_name = hf_config_name
         self.split = split
         self.language = language
         self.local_path = local_path
 
     def _row_to_sample(self, row: dict | object) -> HumanEvalSample | None:
         raw = dict(row) if not isinstance(row, dict) else row
-        task_id = raw.get("task_id", "")
+        task_id = raw.get("task_id") or raw.get("name") or raw.get("id") or ""
         prompt = raw.get("prompt", "")
-        test = raw.get("test", "")
+        test = raw.get("test") or raw.get("tests") or ""
         entry_point = raw.get("entry_point", "")
+        if not entry_point and isinstance(task_id, str):
+            parts = task_id.split("_", 2)
+            if len(parts) >= 3:
+                entry_point = parts[2]
+        if isinstance(test, list):
+            test = "\n".join(str(item) for item in test)
         if not isinstance(task_id, str) or not isinstance(prompt, str):
             return None
         if not isinstance(test, str) or not isinstance(entry_point, str):
@@ -44,12 +52,15 @@ class HumanEvalDatasetAdapter:
         canonical = raw.get("canonical_solution", "")
         if not isinstance(canonical, str):
             canonical = ""
+        language = raw.get("language", self.language)
+        if not isinstance(language, str) or not language:
+            language = self.language
         return HumanEvalSample(
             sample_id=task_id,
             code=CodeArtifact(
                 artifact_id=_artifact_id(task_id),
                 text=prompt,
-                language=self.language,
+                language=language,
             ),
             entry_point=entry_point,
             test=test,
@@ -71,7 +82,10 @@ class HumanEvalDatasetAdapter:
         return samples
 
     def _load_from_hf(self, split: str, limit: int | None) -> list[HumanEvalSample]:
-        ds = load_dataset(self.hf_dataset_name, split=split, streaming=True)
+        if self.hf_config_name:
+            ds = load_dataset(self.hf_dataset_name, self.hf_config_name, split=split, streaming=True)
+        else:
+            ds = load_dataset(self.hf_dataset_name, split=split, streaming=True)
         samples: list[HumanEvalSample] = []
         for row in ds:
             if limit is not None and len(samples) >= limit:

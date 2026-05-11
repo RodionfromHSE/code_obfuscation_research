@@ -44,6 +44,7 @@ uv run python scripts/run_evaluation.py samples_limit=3                     # ev
 - `pipelines/` -- orchestration (run_pipeline + eval_pipeline)
 - `configs/` -- Hydra config groups (paths, task, dataset, model, judge_model, runtime, perturbation, evaluator)
 - `scripts/` -- CLI entry points
+- `swebench_task/` -- standalone SWE-bench experiment ([AGENTS](swebench_task/AGENTS.md))
 
 ## Runtime features
 
