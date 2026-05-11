@@ -60,6 +60,17 @@ uv run python scripts/run_experiment.py \
     perturbation.rename_functions=false
 ```
 
+Parameter-only obfuscation (recommended for HumanEval prompts):
+
+```bash
+uv run python scripts/run_experiment.py \
+    --config-name run/humaneval_prepared \
+    samples_limit=3 \
+    perturbation=rename_symbols_params_only
+```
+
+If you enable `rename_symbols` with `rename_functions=true`, eval automatically remaps HumanEval entry points using perturbation metadata.
+
 Evaluate with deterministic execution metric (`humaneval_exec`, pass/fail per sample):
 
 ```bash

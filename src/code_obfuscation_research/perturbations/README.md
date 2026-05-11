@@ -8,14 +8,15 @@ Returns code unchanged. Used as the baseline to measure unperturbed performance.
 
 ## rename_symbols (`python_rename_symbols.py`)
 
-Replaces public function and class names with opaque placeholders using `libcst`.
+Replaces selected symbol types with opaque placeholders using `libcst`.
 
 - Functions: `calculate_total` -> `func_0`, `process_data` -> `func_1`, ...
 - Classes: `MyParser` -> `cls_0`, `DataLoader` -> `cls_1`, ...
+- Parameters (optional): `left`, `right` -> `arg_0`, `arg_1`, ...
 - All in-file references (calls, attribute access) are updated consistently
 - Names starting with `_` or `__` are skipped (private/dunder)
 - Output is validated with `ast.parse()` to guarantee syntactic correctness
-- Stats report `renamed_functions` and `renamed_classes` counts
+- Stats report counts and mapping metadata (`renamed_function_map`, etc.)
 
 ## Adding a new perturbation
 

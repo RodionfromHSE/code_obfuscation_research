@@ -3,3 +3,4 @@ name: rename_symbols
 rename_functions: true
 rename_classes: true
 rename_variables: false
+rename_parameters: false

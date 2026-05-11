@@ -1,0 +1,21 @@
+# @package _global_
+# GPT-mini rope-rename obfuscation, 100 instances.
+#   uv run python -m swebench_task --config-name=exp_rope_rename_gpt_mini
+#
+# Same 100 instances as exp_identity_gpt_mini (shuffle_seed=42 is fixed),
+# so the pair is directly comparable. Expect ~$50-150 in API cost.
+defaults:
+  - default
+  - override /repo_obfuscation: rope_rename
+  - override /model: gpt5_4_mini
+  - _self_
+
+experiment_name: gpt_mini_rope_rename_100
+samples_limit: 100
+
+agent:
+  concurrency: 16
+
+eval:
+  max_workers: 2
+  timeout: 1800

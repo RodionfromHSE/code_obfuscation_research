@@ -53,3 +53,22 @@ def test_missing_metadata_is_error():
     assert result.is_correct is False
     assert result.score is None
     assert "missing metadata.prompt" in result.reason
+
+
+def test_fallback_to_original_entrypoint_when_completion_defines_original():
+    case = EvalCase(
+        sample_id="HumanEval/99",
+        input_text="prompt",
+        actual_output="def original_name(x):\n    return x + 1\n",
+        expected_output="",
+        perturbation_name="rename_symbols",
+        metadata={
+            "prompt": "def func_0(x):\n    \"\"\"doc\"\"\"\n",
+            "entry_point": "func_0",
+            "original_entry_point": "original_name",
+            "test": "def check(candidate):\n    assert candidate(2) == 3\n",
+        },
+    )
+    result = run_humaneval_exec(case, timeout_seconds=2.0)
+    assert result.is_correct is True
+    assert result.score == 1.0

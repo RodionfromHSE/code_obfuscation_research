@@ -18,18 +18,41 @@ def _extract_code(text: str) -> str:
     return match.group("code")
 
 
-def _build_candidate_program(prompt: str, completion: str, entry_point: str) -> str:
+def _defines_function(code: str, function_name: str) -> bool:
+    pattern = rf"^\s*def\s+{re.escape(function_name)}\s*\("
+    return re.search(pattern, code, flags=re.MULTILINE) is not None
+
+
+def _build_candidate_program(
+    prompt: str,
+    completion: str,
+    entry_point: str,
+    original_entry_point: str | None = None,
+) -> str:
     completion_code = _extract_code(completion).strip("\n")
-    if f"def {entry_point}" in completion_code:
+    if _defines_function(completion_code, entry_point):
+        return completion_code
+    if original_entry_point and _defines_function(completion_code, original_entry_point):
         return completion_code
     return f"{prompt.rstrip()}\n{completion_code}\n"
 
 
-def _build_exec_script(candidate_program: str, test_code: str, entry_point: str) -> str:
+def _build_exec_script(
+    candidate_program: str,
+    test_code: str,
+    entry_point: str,
+    original_entry_point: str | None = None,
+) -> str:
+    fallback = f"{original_entry_point!r}" if original_entry_point is not None else "None"
     return (
         f"{candidate_program.rstrip()}\n\n"
         f"{test_code.rstrip()}\n\n"
-        f"check(globals()[{entry_point!r}])\n"
+        f"_candidate = globals().get({entry_point!r})\n"
+        f"if _candidate is None and {fallback} is not None:\n"
+        f"    _candidate = globals().get({fallback})\n"
+        f"if _candidate is None:\n"
+        f"    raise KeyError('entry point not found')\n"
+        f"check(_candidate)\n"
     )
 
 
@@ -45,6 +68,7 @@ def run_humaneval_exec(case: EvalCase, timeout_seconds: float = 3.0) -> Correctn
     metadata: Mapping[str, object] = case.metadata
     prompt = metadata.get("prompt")
     entry_point = metadata.get("entry_point")
+    original_entry_point = metadata.get("original_entry_point")
     test_code = metadata.get("test")
 
     if not isinstance(prompt, str) or not prompt.strip():
@@ -71,6 +95,15 @@ def run_humaneval_exec(case: EvalCase, timeout_seconds: float = 3.0) -> Correctn
             score=None,
             reason="error: invalid metadata.entry_point",
         )
+    if original_entry_point is not None:
+        if not isinstance(original_entry_point, str) or _IDENT_RE.fullmatch(original_entry_point.strip()) is None:
+            return CorrectnessResult(
+                sample_id=case.sample_id,
+                perturbation_name=case.perturbation_name,
+                is_correct=False,
+                score=None,
+                reason="error: invalid metadata.original_entry_point",
+            )
     if not isinstance(test_code, str) or not test_code.strip():
         return CorrectnessResult(
             sample_id=case.sample_id,
@@ -80,8 +113,8 @@ def run_humaneval_exec(case: EvalCase, timeout_seconds: float = 3.0) -> Correctn
             reason="error: missing metadata.test",
         )
 
-    candidate_program = _build_candidate_program(prompt, case.actual_output, entry_point)
-    script = _build_exec_script(candidate_program, test_code, entry_point)
+    candidate_program = _build_candidate_program(prompt, case.actual_output, entry_point, original_entry_point)
+    script = _build_exec_script(candidate_program, test_code, entry_point, original_entry_point)
 
     try:
         completed = subprocess.run(

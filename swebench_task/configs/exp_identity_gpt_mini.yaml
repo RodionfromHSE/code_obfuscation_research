@@ -1,0 +1,21 @@
+# @package _global_
+# GPT-mini identity baseline, 100 instances.
+#   uv run python -m swebench_task --config-name=exp_identity_gpt_mini
+#
+# Expect ~$50-150 in API cost (mini is ~5x pricier than nano). Runs are
+# cached, so a rerun with the same experiment_name is free.
+defaults:
+  - default
+  - override /repo_obfuscation: identity
+  - override /model: gpt5_4_mini
+  - _self_
+
+experiment_name: gpt_mini_identity_100
+samples_limit: 100
+
+agent:
+  concurrency: 16
+
+eval:
+  max_workers: 2
+  timeout: 1800

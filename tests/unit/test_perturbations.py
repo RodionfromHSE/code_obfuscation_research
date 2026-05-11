@@ -80,3 +80,17 @@ class TestRenameSymbols:
         assert result.applied
         assert "calculate_total" not in result.perturbed_code.text
         assert "func_0" in result.perturbed_code.text
+
+    def test_renames_parameters_when_enabled(self):
+        code = "def add_numbers(left, right):\n    return left + right\n"
+        p = RenameSymbolsPerturbation(
+            rename_functions=False,
+            rename_classes=False,
+            rename_parameters=True,
+        )
+        result = p.apply(_inp(code))
+        assert result.applied
+        text = result.perturbed_code.text
+        assert "def add_numbers(arg_0, arg_1)" in text
+        assert "return arg_0 + arg_1" in text
+        assert result.stats["renamed_parameters"] == 2

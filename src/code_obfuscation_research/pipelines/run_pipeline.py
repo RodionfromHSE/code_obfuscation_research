@@ -1,6 +1,7 @@
 """Run pipeline orchestration: load data, perturb, infer, store."""
 import asyncio
 import logging
+from collections.abc import Mapping
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig
@@ -19,18 +20,45 @@ from code_obfuscation_research.runtime.store import RunStore
 logger = logging.getLogger(__name__)
 
 
+def _remap_humaneval_entry_point_if_needed(
+    request_metadata: dict,
+    perturbation_stats: Mapping[str, object],
+) -> dict:
+    entry_point = request_metadata.get("entry_point")
+    if not isinstance(entry_point, str):
+        return request_metadata
+
+    renamed_function_map = perturbation_stats.get("renamed_function_map")
+    if not isinstance(renamed_function_map, Mapping):
+        return request_metadata
+
+    mapped = renamed_function_map.get(entry_point)
+    if not isinstance(mapped, str):
+        return request_metadata
+
+    updated = dict(request_metadata)
+    updated["original_entry_point"] = entry_point
+    updated["entry_point"] = mapped
+    return updated
+
+
 def _build_request(sample: CodeTaskSample, task, perturbation, perturbation_name: str) -> tuple[ModelRequest, dict]:
     """Perturb code + build model request. Returns (request, perturbation_stats)."""
     pert_input = PerturbationInput(code=sample.code, sample_id=sample.sample_id)
     pert_result = perturbation.apply(pert_input)
+    perturbation_stats = dict(pert_result.stats)
     request = task.build_request(sample, pert_result.perturbed_code)
+    request_metadata = _remap_humaneval_entry_point_if_needed(
+        request_metadata=dict(request.metadata),
+        perturbation_stats=perturbation_stats,
+    )
     request = ModelRequest(
         sample_id=request.sample_id,
         perturbation_name=perturbation_name,
         messages=request.messages,
-        metadata=request.metadata,
+        metadata=request_metadata,
     )
-    return request, dict(pert_result.stats)
+    return request, perturbation_stats
 
 
 def _to_record(sample, task, request, response, perturbation_name, perturbation_stats) -> RunRecord:

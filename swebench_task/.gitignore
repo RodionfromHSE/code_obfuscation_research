@@ -1,0 +1,6 @@
+# Artifacts from pipeline runs
+artifacts/
+
+# Hydra output dirs
+outputs/
+multirun/
